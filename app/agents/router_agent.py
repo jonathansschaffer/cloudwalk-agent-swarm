@@ -129,7 +129,7 @@ def router_node(state: AgentState) -> AgentState:
 
 def knowledge_node(state: AgentState) -> AgentState:
     """Routes to the Knowledge Agent (RAG or web search)."""
-    response = knowledge_agent.run(state["message"])
+    response = knowledge_agent.run(state["message"], state["language"])
     return {
         **state,
         "response": guardrails.sanitize_output(response),
@@ -139,7 +139,7 @@ def knowledge_node(state: AgentState) -> AgentState:
 
 def support_node(state: AgentState) -> AgentState:
     """Routes to the Customer Support Agent."""
-    result = support_agent.run(state["message"], state["user_id"])
+    result = support_agent.run(state["message"], state["user_id"], state["language"])
     new_state = {
         **state,
         "response": guardrails.sanitize_output(result["response"]),

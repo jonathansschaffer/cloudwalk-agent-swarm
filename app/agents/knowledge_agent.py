@@ -4,6 +4,7 @@ Uses LangGraph's create_react_agent with a ReAct loop.
 """
 
 import logging
+import threading
 from datetime import date
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -52,24 +53,39 @@ When searching for recent sports results or news:
   (partial info, approximate date) rather than giving up entirely."""
 
 _agent = None
+_agent_lock = threading.Lock()
 
 
 def _get_agent():
     global _agent
     if _agent is None:
-        llm = ChatAnthropic(
-            model=LLM_MODEL,
-            api_key=ANTHROPIC_API_KEY,
-            max_tokens=LLM_MAX_TOKENS,
-            temperature=LLM_TEMPERATURE,
-        )
-        tools = [infinitepay_knowledge_base, web_search]
-        _agent = create_react_agent(llm, tools, prompt=KNOWLEDGE_SYSTEM_PROMPT)
-        logger.info("Knowledge Agent initialized.")
+        with _agent_lock:
+            if _agent is None:
+                llm = ChatAnthropic(
+                    model=LLM_MODEL,
+                    api_key=ANTHROPIC_API_KEY,
+                    max_tokens=LLM_MAX_TOKENS,
+                    temperature=LLM_TEMPERATURE,
+                )
+                tools = [infinitepay_knowledge_base, web_search]
+                _agent = create_react_agent(llm, tools, prompt=KNOWLEDGE_SYSTEM_PROMPT)
+                logger.info("Knowledge Agent initialized.")
     return _agent
 
 
-def run(message: str) -> str:
+_ERROR_MESSAGES = {
+    "pt": (
+        "Encontrei um erro ao buscar as informações. "
+        "Por favor, tente novamente ou entre em contato com o suporte em suporte@infinitepay.io"
+    ),
+    "en": (
+        "I encountered an error while looking up the information. "
+        "Please try again or contact InfinitePay support at suporte@infinitepay.io"
+    ),
+}
+
+
+def run(message: str, language: str = "en") -> str:
     """
     Runs the Knowledge Agent on a user message.
 
@@ -78,7 +94,8 @@ def run(message: str) -> str:
     and validate that search results match the requested time period.
 
     Args:
-        message: The user's question (product or general).
+        message:  The user's question (product or general).
+        language: Detected language ("pt" or "en") for error messages.
 
     Returns:
         The agent's answer as a string.
@@ -93,7 +110,4 @@ def run(message: str) -> str:
         return last_message.content
     except Exception as exc:
         logger.error("Knowledge Agent error: %s", exc)
-        return (
-            "I encountered an error while looking up the information. "
-            "Please try again or contact InfinitePay support at suporte@infinitepay.io"
-        )
+        return _ERROR_MESSAGES.get(language, _ERROR_MESSAGES["en"])

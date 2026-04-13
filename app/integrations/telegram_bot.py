@@ -20,6 +20,7 @@ Commands:
 import asyncio
 import logging
 import textwrap
+from concurrent.futures import ThreadPoolExecutor
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -35,6 +36,10 @@ from telegram.ext import (
 from app.agents.router_agent import process_message
 
 logger = logging.getLogger(__name__)
+
+# Serializes agent calls — prevents concurrent Anthropic API requests from
+# multiple simultaneous Telegram messages hitting rate limits or connection errors.
+_AGENT_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
 # ---------------------------------------------------------------------------
 # Agent badge labels for each agent type
@@ -148,11 +153,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
     try:
-        # process_message is synchronous/blocking — run in thread pool
-        # Use get_running_loop() (not deprecated get_event_loop()) to get
-        # the loop that is actually running this coroutine
+        # process_message is synchronous/blocking — run in the dedicated executor.
+        # Using max_workers=1 serializes calls so only one Anthropic API request
+        # is in flight at a time, preventing rate-limit errors under concurrent load.
         loop = asyncio.get_running_loop()
-        state = await loop.run_in_executor(None, process_message, user_text, user_id)
+        state = await loop.run_in_executor(_AGENT_EXECUTOR, process_message, user_text, user_id)
     except Exception as exc:
         logger.error("Agent Swarm error for Telegram user %s: %s", user_id, exc)
         await update.message.reply_text(

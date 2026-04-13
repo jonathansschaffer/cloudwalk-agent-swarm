@@ -5,6 +5,7 @@ Uses LangGraph's create_react_agent with three tools.
 
 import logging
 import re
+import threading
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import create_react_agent
@@ -45,30 +46,47 @@ include the text "ESCALATE_TO_HUMAN" at the very end of your response (on its ow
 - When creating a ticket, always tell the customer the ticket number and estimated resolution time."""
 
 _agent = None
+_agent_lock = threading.Lock()
+
+_ERROR_MESSAGES = {
+    "pt": (
+        "Estou com dificuldades para acessar os detalhes da sua conta agora. "
+        "Por favor, entre em contato com nossa equipe de suporte em suporte@infinitepay.io "
+        "ou ligue para 0800-722-0803."
+    ),
+    "en": (
+        "I'm having trouble accessing your account details right now. "
+        "Please contact our support team directly at suporte@infinitepay.io "
+        "or call 0800-722-0803."
+    ),
+}
 
 
 def _get_agent():
     global _agent
     if _agent is None:
-        llm = ChatAnthropic(
-            model=LLM_MODEL,
-            api_key=ANTHROPIC_API_KEY,
-            max_tokens=LLM_MAX_TOKENS,
-            temperature=LLM_TEMPERATURE,
-        )
-        tools = [lookup_account_status, get_transaction_history, create_support_ticket]
-        _agent = create_react_agent(llm, tools, prompt=SUPPORT_SYSTEM_PROMPT)
-        logger.info("Support Agent initialized.")
+        with _agent_lock:
+            if _agent is None:
+                llm = ChatAnthropic(
+                    model=LLM_MODEL,
+                    api_key=ANTHROPIC_API_KEY,
+                    max_tokens=LLM_MAX_TOKENS,
+                    temperature=LLM_TEMPERATURE,
+                )
+                tools = [lookup_account_status, get_transaction_history, create_support_ticket]
+                _agent = create_react_agent(llm, tools, prompt=SUPPORT_SYSTEM_PROMPT)
+                logger.info("Support Agent initialized.")
     return _agent
 
 
-def run(message: str, user_id: str) -> dict:
+def run(message: str, user_id: str, language: str = "en") -> dict:
     """
     Runs the Customer Support Agent on a user message.
 
     Args:
-        message: The user's support request.
-        user_id: The customer's unique identifier.
+        message:  The user's support request.
+        user_id:  The customer's unique identifier.
+        language: Detected language ("pt" or "en") for error messages.
 
     Returns:
         {"response": str, "escalate": bool, "ticket_id": str | None}
@@ -100,11 +118,7 @@ def run(message: str, user_id: str) -> dict:
     except Exception as exc:
         logger.error("Support Agent error: %s", exc)
         return {
-            "response": (
-                "I'm having trouble accessing your account details right now. "
-                "Please contact our support team directly at suporte@infinitepay.io "
-                "or call 0800-722-0803."
-            ),
+            "response": _ERROR_MESSAGES.get(language, _ERROR_MESSAGES["en"]),
             "escalate": True,
             "ticket_id": None,
         }
