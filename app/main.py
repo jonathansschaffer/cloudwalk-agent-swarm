@@ -10,20 +10,27 @@ Startup sequence:
   3. Start Telegram bot (if TELEGRAM_BOT_TOKEN is set)
   4. Serve until shutdown signal received
   5. Gracefully stop Telegram bot on shutdown
+
+Security middleware stack (outermost → innermost):
+  SecurityHeadersMiddleware → CORSMiddleware → SlowAPI rate limiting → routes
 """
 
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.utils.logger import setup_logging
 from app.config import validate_config, TELEGRAM_BOT_TOKEN
-from app.api.routes import router
+from app.api.routes import router, limiter
 from app.rag.pipeline import build_knowledge_base
 
 # Configure logging before anything else
@@ -34,13 +41,41 @@ logger = logging.getLogger(__name__)
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
+# ------------------------------------------------------------------ #
+# Security Headers Middleware                                          #
+# ------------------------------------------------------------------ #
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Adds security headers to every HTTP response."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        # Allow scripts from self + cdn.jsdelivr.net (marked.js CDN used by frontend)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "font-src 'self'; "
+            "frame-ancestors 'none';"
+        )
+        return response
+
+
+# ------------------------------------------------------------------ #
+# Lifespan                                                            #
+# ------------------------------------------------------------------ #
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manages startup and shutdown of all long-lived resources."""
 
-    # ------------------------------------------------------------------ #
-    # Startup                                                              #
-    # ------------------------------------------------------------------ #
     logger.info("=== InfinitePay Agent Swarm Starting Up ===")
 
     # Validate required configuration (raises on missing ANTHROPIC_API_KEY)
@@ -74,9 +109,6 @@ async def lifespan(app: FastAPI):
 
     yield  # Application serves requests here
 
-    # ------------------------------------------------------------------ #
-    # Shutdown                                                             #
-    # ------------------------------------------------------------------ #
     logger.info("=== Agent Swarm Shutting Down ===")
 
     if tg_app is not None:
@@ -105,17 +137,30 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow all origins (suitable for development and demo)
+# Attach limiter to app state (required by slowapi)
+app.state.limiter = limiter
+
+# Rate limit exceeded handler — returns 429 with a clear message
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Rate limiting middleware
+app.add_middleware(SlowAPIMiddleware)
+
+# Security headers on every response
+app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS — restrict to same origin for demo; widen for production deployments
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
+
 # ------------------------------------------------------------------ #
-# Frontend — serve the chat UI                                         #
+# Frontend — serve the chat UI                                        #
 # ------------------------------------------------------------------ #
 
 @app.get("/", include_in_schema=False)
@@ -127,8 +172,9 @@ def serve_frontend() -> FileResponse:
 if _STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
+
 # ------------------------------------------------------------------ #
-# API routes                                                           #
+# API routes                                                          #
 # ------------------------------------------------------------------ #
 
 app.include_router(router, tags=["Agent Swarm"])

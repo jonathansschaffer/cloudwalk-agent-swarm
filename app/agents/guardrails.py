@@ -85,6 +85,7 @@ def check_input(message: str, language: str = "en") -> dict:
     """
     # Quick regex pre-filter for obvious prompt injection attempts
     injection_patterns = [
+        # Classic prompt injection
         r"ignore (all |previous |prior )?instructions",
         r"you are now",
         r"disregard (all |your )?",
@@ -93,6 +94,25 @@ def check_input(message: str, language: str = "en") -> dict:
         r"act as (if|a|an)",
         r"jailbreak",
         r"DAN mode",
+        # System prompt extraction
+        r"system\s*prompt",
+        r"reveal.*prompt",
+        r"print.*instructions",
+        r"what (are you |were you )?told (to|you)",
+        r"override.*safety",
+        r"bypass.*filter",
+        r"pretend.*(you are|to be)",
+        r"repeat (everything|what)",
+        # Obfuscation / encoding attempts
+        r"<\s*script",           # XSS attempt
+        r"&#x[0-9a-fA-F]+;",    # HTML entity obfuscation
+        r"base64",               # Encoded payload attempts
+        # Portuguese variants
+        r"ignore (todas as |as )?instru",
+        r"esqueça (tudo|suas instru)",
+        r"novo (papel|persona|instru)",
+        r"finja (ser|que você é)",
+        r"repita (tudo|as instru)",
     ]
     for pattern in injection_patterns:
         if re.search(pattern, message, re.IGNORECASE):
@@ -147,6 +167,20 @@ def sanitize_output(response: str) -> str:
     response = re.sub(
         r"\b(\d{4}[\s\-]?){3}\d{4}\b",
         "[CARD NUMBER REDACTED]",
+        response,
+    )
+
+    # Redact Brazilian phone numbers (e.g. (11) 99999-9999 or 11999999999)
+    response = re.sub(
+        r"\(?\d{2}\)?[\s\-]?9?\d{4}[\s\-]?\d{4}\b",
+        "[PHONE REDACTED]",
+        response,
+    )
+
+    # Redact email addresses that are NOT InfinitePay support contact
+    response = re.sub(
+        r"\b(?!suporte@infinitepay\.io\b)[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b",
+        "[EMAIL REDACTED]",
         response,
     )
 

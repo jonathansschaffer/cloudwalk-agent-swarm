@@ -9,6 +9,7 @@ from datetime import date
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
+from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
 
 from app.config import ANTHROPIC_API_KEY, LLM_MODEL, LLM_MAX_TOKENS, LLM_TEMPERATURE
 from app.tools.rag_tool import infinitepay_knowledge_base
@@ -85,6 +86,17 @@ _ERROR_MESSAGES = {
 }
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+def _invoke_with_retry(agent, messages: dict) -> dict:
+    """Calls agent.invoke() with up to 3 retries and exponential backoff."""
+    return agent.invoke(messages)
+
+
 def run(message: str, language: str = "en") -> str:
     """
     Runs the Knowledge Agent on a user message.
@@ -104,10 +116,10 @@ def run(message: str, language: str = "en") -> str:
     today = date.today().strftime("%A, %B %d, %Y")
     dated_message = f"[Date: {today}]\n\n{message}"
     try:
-        result = agent.invoke({"messages": [HumanMessage(content=dated_message)]})
+        result = _invoke_with_retry(agent, {"messages": [HumanMessage(content=dated_message)]})
         # The last message in the list is the final AI response
         last_message = result["messages"][-1]
         return last_message.content
     except Exception as exc:
-        logger.error("Knowledge Agent error: %s", exc)
+        logger.error("Knowledge Agent error after retries: %s", exc)
         return _ERROR_MESSAGES.get(language, _ERROR_MESSAGES["en"])

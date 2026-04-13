@@ -7,6 +7,7 @@ import logging
 import re
 import threading
 from langchain_anthropic import ChatAnthropic
+from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
 from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import create_react_agent
 
@@ -62,6 +63,17 @@ _ERROR_MESSAGES = {
 }
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+def _invoke_with_retry(agent, messages: dict) -> dict:
+    """Calls agent.invoke() with up to 3 retries and exponential backoff."""
+    return agent.invoke(messages)
+
+
 def _get_agent():
     global _agent
     if _agent is None:
@@ -95,7 +107,7 @@ def run(message: str, user_id: str, language: str = "en") -> dict:
     full_input = f"Customer ID: {user_id}\nCustomer message: {message}"
 
     try:
-        result = agent.invoke({"messages": [HumanMessage(content=full_input)]})
+        result = _invoke_with_retry(agent, {"messages": [HumanMessage(content=full_input)]})
         response_text: str = result["messages"][-1].content
 
         # Check for escalation flag
@@ -116,7 +128,7 @@ def run(message: str, user_id: str, language: str = "en") -> dict:
         }
 
     except Exception as exc:
-        logger.error("Support Agent error: %s", exc)
+        logger.error("Support Agent error after retries: %s", exc)
         return {
             "response": _ERROR_MESSAGES.get(language, _ERROR_MESSAGES["en"]),
             "escalate": True,

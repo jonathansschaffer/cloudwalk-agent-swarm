@@ -637,6 +637,56 @@
   let isLoading = false;
 
   // ------------------------------------------------------------------ //
+  // Chat history — load from server on start and on user switch         //
+  // ------------------------------------------------------------------ //
+  async function loadHistory(userId) {
+    // Clear current messages from the DOM
+    messagesEl.innerHTML = '';
+    try {
+      const res = await fetch(`${API_BASE}/history/${encodeURIComponent(userId)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.history || data.history.length === 0) return;
+
+      data.history.forEach(turn => {
+        // Render user bubble
+        const userRow = document.createElement('div');
+        userRow.className = 'message-row user';
+        const ts = turn.timestamp
+          ? new Date(turn.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+          : '';
+        userRow.innerHTML = `
+          <div class="avatar user-avatar">👤</div>
+          <div class="bubble-wrapper">
+            <div class="bubble">${escapeHtml(turn.user)}</div>
+            <div class="message-footer"><span class="msg-time">${ts}</span></div>
+          </div>
+        `;
+        messagesEl.appendChild(userRow);
+
+        // Render bot bubble
+        appendBotMessage({
+          response:   turn.bot,
+          agent_used: turn.agent_used,
+          ticket_id:  turn.ticket_id,
+          escalated:  turn.escalated,
+          language:   turn.language,
+        }, ts);
+      });
+    } catch (e) {
+      // History load failure is non-critical — just start fresh
+    }
+  }
+
+  // Load history for the initially selected user
+  loadHistory(userSelector.value);
+
+  // Reload history whenever the user switches
+  userSelector.addEventListener('change', () => {
+    loadHistory(userSelector.value);
+  });
+
+  // ------------------------------------------------------------------ //
   // Health check                                                         //
   // ------------------------------------------------------------------ //
   async function checkHealth() {
@@ -759,8 +809,9 @@
     scrollBottom();
   }
 
-  function appendBotMessage(data) {
+  function appendBotMessage(data, timestamp) {
     const { response, agent_used, ticket_id, escalated, language } = data;
+    const msgTime = timestamp || now();
 
     const badgeClass = agentBadgeClass(agent_used);
     const badgeLabel = agentBadgeLabel(agent_used);
@@ -789,7 +840,7 @@
         ${ticketHtml}
         ${escalatedHtml}
         <div class="message-footer">
-          <span class="msg-time">${now()}</span>
+          <span class="msg-time">${msgTime}</span>
           <span class="agent-badge ${badgeClass}">${badgeLabel}</span>
           <span class="msg-time">${langBadge}</span>
         </div>
