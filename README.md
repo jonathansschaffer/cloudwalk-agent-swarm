@@ -19,7 +19,7 @@
 | 🌐 **Web Chat** | `http://localhost:8000/` | Full-featured chat UI with history |
 | 🤖 **REST API** | `http://localhost:8000/chat` | JSON endpoint for integrations |
 | 📖 **Swagger UI** | `http://localhost:8000/docs` | Interactive API documentation |
-| 💬 **Telegram Bot** | Set `TELEGRAM_BOT_TOKEN` in `.env` | Chat via the Telegram app |
+| 💬 **Telegram Bot** | http://t.me/CloudWalk_Challenge_Bot | Chat via the Telegram app |
 
 ---
 
@@ -542,12 +542,28 @@ I used AI assistants throughout development:
 
 ## Production Roadmap
 
-- [ ] **Authentication**: JWT on the API for multi-tenant environments
-- [ ] **Real CRM**: Replace mock with a real CRM API integration (HubSpot, Salesforce)
-- [ ] **Observability**: LangSmith for agent trace monitoring; Prometheus/Grafana for metrics
-- [ ] **RAG evaluation**: Golden Q&A set for automated regression; MRR and Recall@K metrics
-- [ ] **Telegram webhook**: Replace long polling with HTTPS webhook for production
-- [ ] **Response cache**: Redis to answer frequent questions without calling the LLM
-- [ ] **Load testing**: k6 or Locust to measure P95/P99 with concurrent users
-- [ ] **Incremental RAG**: Auto-update the knowledge base when InfinitePay pages change
-- [ ] **Persistent history**: Replace in-memory history store with Redis or PostgreSQL
+Items are grouped by phase. Each phase depends on the previous one being stable.
+
+### Phase 1 — Deployment
+
+- [ ] **Vercel deployment**: Deploy the API and web UI to Vercel and generate a public URL for testing; configure environment variables as Vercel secrets
+- [ ] **Telegram webhook**: Replace long polling with HTTPS webhook (required for serverless environments like Vercel — long polling needs a persistent process)
+- [ ] **Telegram → web UI redirect**: When a Telegram user makes an account-specific request (support, history, login issues), the bot replies suggesting they access the InfinitePay Assistant web UI at the Vercel URL for the full experience
+
+### Phase 2 — Observability & Quality
+
+- [ ] **Observability**: Integrate LangSmith for end-to-end agent trace monitoring (diagnose missed messages, slow responses, tool failures); add Prometheus/Grafana for infrastructure metrics
+- [ ] **RAG evaluation**: Build a golden Q&A dataset to run automated regression tests on retrieval quality; track MRR and Recall@K metrics after each knowledge base update
+- [ ] **Load testing**: Run k6 or Locust against the Vercel URL to measure P95/P99 latency with concurrent users and identify bottlenecks
+
+### Phase 3 — Security & Data
+
+- [ ] **Mock database security**: Harden CRM mock data access — prevent user enumeration via `/history`, enforce strict `user_id` ownership checks, ensure no sensitive fields leak through the API response layer
+- [ ] **Authentication**: Add JWT-based authentication to the `/chat` and `/history` endpoints for multi-tenant environments; each token scoped to a single `user_id`
+- [ ] **Persistent history**: Replace the in-memory conversation store (`chat_history.py`) with Redis or PostgreSQL so history survives server restarts
+- [ ] **Real CRM**: Replace `mock_users.py` with a real CRM API integration (HubSpot, Salesforce, or internal CRM); `lookup_account_status` and `get_transaction_history` tools point to live data
+
+### Phase 4 — Performance & Scale
+
+- [ ] **Response cache**: Use Redis to cache frequent knowledge questions (e.g. "What are Maquininha fees?") and return answers without calling the LLM, reducing latency and cost
+- [ ] **Incremental RAG**: Auto-detect changes on InfinitePay pages (sitemap diff or scheduled scrape) and update only the changed chunks in ChromaDB, without a full rebuild
