@@ -2,7 +2,7 @@
 FastAPI route definitions.
 
 Endpoints:
-  POST /chat          — sends a message through the Agent Swarm
+  POST /chat          — sends a message to the InfinitePay Assistant
   GET  /health        — health check and knowledge base stats
   GET  /history/{id}  — retrieves chat history for a user (server-side, isolated)
 """
@@ -30,11 +30,11 @@ limiter = Limiter(key_func=get_remote_address)
 _USER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
 
 
-@router.post("/chat", response_model=ChatResponse, summary="Send a message to the Agent Swarm")
+@router.post("/chat", response_model=ChatResponse, summary="Send a message to the InfinitePay Assistant")
 @limiter.limit("20/minute")
 def chat(request: Request, body: ChatRequest) -> ChatResponse:
     """
-    Processes a user message through the Agent Swarm and returns a response.
+    Processes a user message through the InfinitePay Assistant and returns a response.
 
     The swarm will:
     1. Validate user_id format.

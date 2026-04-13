@@ -126,11 +126,11 @@ async def lifespan(app: FastAPI):
 # ------------------------------------------------------------------ #
 
 app = FastAPI(
-    title="InfinitePay Agent Swarm",
+    title="InfinitePay Assistant",
     description=(
-        "A multi-agent AI system for InfinitePay customer support. "
+        "AI-powered customer support assistant for InfinitePay. "
         "Routes user messages to specialized agents: Knowledge (RAG + Web Search), "
-        "Customer Support, and Escalation (Human Redirect). "
+        "Customer Support, and Human Escalation. "
         "Also exposes a web chat UI at / and an optional Telegram bot."
     ),
     version="1.0.0",
@@ -177,4 +177,4 @@ if _STATIC_DIR.exists():
 # API routes                                                          #
 # ------------------------------------------------------------------ #
 
-app.include_router(router, tags=["Agent Swarm"])
+app.include_router(router, tags=["InfinitePay Assistant"])
