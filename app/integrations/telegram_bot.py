@@ -209,7 +209,7 @@ _HELP_MESSAGE = textwrap.dedent("""
     • "Qual o resultado do último jogo do Santos?"
     • "Quais as principais notícias de hoje?"
 
-    🤝 <b>Escalação:</b>
+    🤝 <b>Atendimento Humano:</b>
     • "Quero falar com um atendente humano"
     • "I need to speak with a human agent"
 
