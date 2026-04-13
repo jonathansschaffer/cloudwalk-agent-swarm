@@ -48,7 +48,7 @@ _AGENT_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 _AGENT_LABELS = {
     "knowledge_agent": "🔍 Knowledge Agent",
     "support_agent": "🛠️ Support Agent",
-    "escalation_agent": "🚨 Escalation Agent",
+    "escalation_agent": "🚨 Atendimento Humano",
     "guardrails": "🛡️ Guardrails",
 }
 
@@ -181,7 +181,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         footer_parts.append(f"\n🎫 Ticket criado: {ticket_id}")
 
     if escalated and agent_used != "escalation_agent":
-        footer_parts.append("\n\n⚠️ Esta conversa foi escalada para nossa equipe humana.")
+        footer_parts.append("\n\n⚠️ Esta conversa foi encaminhada para nossa equipe humana.")
 
     full_message = response_text + "".join(footer_parts)
 

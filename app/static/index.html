@@ -557,26 +557,7 @@
   </header>
 
   <!-- Messages -->
-  <div class="messages" id="messages">
-
-    <!-- Welcome card -->
-    <div class="welcome-message">
-      <div class="welcome-icon">🤖</div>
-      <h2>Bem-vindo ao Agent Swarm!</h2>
-      <p>
-        Sou composto por 4 agentes especializados: <strong>Knowledge</strong> (RAG + busca web),
-        <strong>Support</strong> (ferramentas de conta), <strong>Escalation</strong> (humano) e
-        um <strong>Router</strong> que decide automaticamente quem responde.
-      </p>
-      <div class="quick-questions">
-        <button class="quick-btn" onclick="sendQuick('Quais as taxas da Maquininha Smart?')">💳 Taxas Maquininha</button>
-        <button class="quick-btn" onclick="sendQuick('Não consigo fazer transferências')">🔧 Problema de conta</button>
-        <button class="quick-btn" onclick="sendQuick('Como funciona o Pix Parcelado?')">⚡ Pix Parcelado</button>
-        <button class="quick-btn" onclick="sendQuick('Quero falar com um humano')">🤝 Escalação</button>
-      </div>
-    </div>
-
-  </div>
+  <div class="messages" id="messages"></div>
 
   <!-- Input -->
   <div class="input-area">
@@ -637,24 +618,53 @@
   let isLoading = false;
 
   // ------------------------------------------------------------------ //
+  // Welcome card (rendered by JS so it survives user switches)          //
+  // ------------------------------------------------------------------ //
+  function renderWelcomeCard() {
+    const card = document.createElement('div');
+    card.className = 'welcome-message';
+    card.id = 'welcomeCard';
+    card.innerHTML = `
+      <div class="welcome-icon">🤖</div>
+      <h2>Bem-vindo ao Agent Swarm!</h2>
+      <p>
+        Sou composto por 4 agentes especializados: <strong>Knowledge</strong> (RAG + busca web),
+        <strong>Support</strong> (ferramentas de conta), <strong>Atendimento Humano</strong> e
+        um <strong>Router</strong> que decide automaticamente quem responde.
+      </p>
+      <div class="quick-questions">
+        <button class="quick-btn" onclick="sendQuick('Quais as taxas da Maquininha Smart?')">💳 Taxas Maquininha</button>
+        <button class="quick-btn" onclick="sendQuick('Não consigo fazer transferências')">🔧 Problema de conta</button>
+        <button class="quick-btn" onclick="sendQuick('Como funciona o Pix Parcelado?')">⚡ Pix Parcelado</button>
+        <button class="quick-btn" onclick="sendQuick('Quero falar com um humano')">🤝 Falar com humano</button>
+      </div>
+    `;
+    messagesEl.appendChild(card);
+  }
+
+  function removeWelcomeCard() {
+    const card = document.getElementById('welcomeCard');
+    if (card) card.remove();
+  }
+
+  // ------------------------------------------------------------------ //
   // Chat history — load from server on start and on user switch         //
   // ------------------------------------------------------------------ //
   async function loadHistory(userId) {
-    // Clear current messages from the DOM
     messagesEl.innerHTML = '';
     try {
       const res = await fetch(`${API_BASE}/history/${encodeURIComponent(userId)}`);
-      if (!res.ok) return;
+      if (!res.ok) { renderWelcomeCard(); return; }
       const data = await res.json();
-      if (!data.history || data.history.length === 0) return;
+      if (!data.history || data.history.length === 0) { renderWelcomeCard(); return; }
 
       data.history.forEach(turn => {
-        // Render user bubble
-        const userRow = document.createElement('div');
-        userRow.className = 'message-row user';
         const ts = turn.timestamp
           ? new Date(turn.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
           : '';
+        // User bubble
+        const userRow = document.createElement('div');
+        userRow.className = 'message-row user';
         userRow.innerHTML = `
           <div class="avatar user-avatar">👤</div>
           <div class="bubble-wrapper">
@@ -663,8 +673,7 @@
           </div>
         `;
         messagesEl.appendChild(userRow);
-
-        // Render bot bubble
+        // Bot bubble
         appendBotMessage({
           response:   turn.bot,
           agent_used: turn.agent_used,
@@ -674,7 +683,7 @@
         }, ts);
       });
     } catch (e) {
-      // History load failure is non-critical — just start fresh
+      renderWelcomeCard();
     }
   }
 
@@ -746,6 +755,9 @@
     if (!text || isLoading) return;
 
     const userId = userSelector.value;
+
+    // Remove welcome card on first message
+    removeWelcomeCard();
 
     // Render user bubble
     appendUserMessage(text);
@@ -827,7 +839,7 @@
     const escalatedHtml = escalated && agent_used !== 'escalation_agent' ? `
       <div class="ticket-card" style="border-color:rgba(255,85,85,0.3);background:rgba(255,85,85,0.06);color:#ff5555;">
         <span>⚠️</span>
-        <span>Esta conversa foi escalada para a equipe humana</span>
+        <span>Esta conversa foi encaminhada para nossa equipe humana</span>
       </div>
     ` : '';
 
@@ -901,7 +913,7 @@
     const map = {
       knowledge_agent:  '🔍 Knowledge',
       support_agent:    '🛠️ Support',
-      escalation_agent: '🚨 Escalation',
+      escalation_agent: '🚨 Atendimento Humano',
       guardrails:       '🛡️ Guardrails',
     };
     return map[agent] || agent;
