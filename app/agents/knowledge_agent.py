@@ -1,13 +1,12 @@
 """
 Knowledge Agent: handles product/service questions (RAG) and general questions (web search).
-Uses a ReAct loop via LangChain's tool-calling agent.
+Uses LangGraph's create_react_agent with a ReAct loop.
 """
 
 import logging
 from langchain_anthropic import ChatAnthropic
-from langchain.agents import create_tool_calling_agent, AgentExecutor
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.prebuilt import create_react_agent
 
 from app.config import ANTHROPIC_API_KEY, LLM_MODEL, LLM_MAX_TOKENS, LLM_TEMPERATURE
 from app.tools.rag_tool import infinitepay_knowledge_base
@@ -36,39 +35,22 @@ fees, features, or how things work. Always try this tool FIRST for InfinitePay t
 - When citing InfinitePay information, mention the source URL when available.
 - Be friendly and professional."""
 
-_agent_executor: AgentExecutor | None = None
+_agent = None
 
 
-def _get_agent_executor() -> AgentExecutor:
-    global _agent_executor
-    if _agent_executor is None:
+def _get_agent():
+    global _agent
+    if _agent is None:
         llm = ChatAnthropic(
             model=LLM_MODEL,
             api_key=ANTHROPIC_API_KEY,
             max_tokens=LLM_MAX_TOKENS,
             temperature=LLM_TEMPERATURE,
         )
-
         tools = [infinitepay_knowledge_base, web_search]
-
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", KNOWLEDGE_SYSTEM_PROMPT),
-                ("human", "{input}"),
-                MessagesPlaceholder("agent_scratchpad"),
-            ]
-        )
-
-        agent = create_tool_calling_agent(llm, tools, prompt)
-        _agent_executor = AgentExecutor(
-            agent=agent,
-            tools=tools,
-            verbose=False,
-            max_iterations=5,
-            handle_parsing_errors=True,
-        )
+        _agent = create_react_agent(llm, tools, prompt=KNOWLEDGE_SYSTEM_PROMPT)
         logger.info("Knowledge Agent initialized.")
-    return _agent_executor
+    return _agent
 
 
 def run(message: str) -> str:
@@ -81,10 +63,12 @@ def run(message: str) -> str:
     Returns:
         The agent's answer as a string.
     """
-    executor = _get_agent_executor()
+    agent = _get_agent()
     try:
-        result = executor.invoke({"input": message})
-        return result.get("output", "I was unable to find an answer. Please contact our support team.")
+        result = agent.invoke({"messages": [HumanMessage(content=message)]})
+        # The last message in the list is the final AI response
+        last_message = result["messages"][-1]
+        return last_message.content
     except Exception as exc:
         logger.error("Knowledge Agent error: %s", exc)
         return (

@@ -1,12 +1,13 @@
 """
 Customer Support Agent: handles account issues using CRM tools.
-Uses a ReAct loop with three tools: account lookup, transaction history, and ticket creation.
+Uses LangGraph's create_react_agent with three tools.
 """
 
 import logging
+import re
 from langchain_anthropic import ChatAnthropic
-from langchain.agents import create_tool_calling_agent, AgentExecutor
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage
+from langgraph.prebuilt import create_react_agent
 
 from app.config import ANTHROPIC_API_KEY, LLM_MODEL, LLM_MAX_TOKENS, LLM_TEMPERATURE
 from app.tools.account_tools import lookup_account_status, get_transaction_history, create_support_ticket
@@ -43,39 +44,22 @@ include the text "ESCALATE_TO_HUMAN" at the very end of your response (on its ow
 - Never invent account data — only use what the tools return.
 - When creating a ticket, always tell the customer the ticket number and estimated resolution time."""
 
-_agent_executor: AgentExecutor | None = None
+_agent = None
 
 
-def _get_agent_executor() -> AgentExecutor:
-    global _agent_executor
-    if _agent_executor is None:
+def _get_agent():
+    global _agent
+    if _agent is None:
         llm = ChatAnthropic(
             model=LLM_MODEL,
             api_key=ANTHROPIC_API_KEY,
             max_tokens=LLM_MAX_TOKENS,
             temperature=LLM_TEMPERATURE,
         )
-
         tools = [lookup_account_status, get_transaction_history, create_support_ticket]
-
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", SUPPORT_SYSTEM_PROMPT),
-                ("human", "{input}"),
-                MessagesPlaceholder("agent_scratchpad"),
-            ]
-        )
-
-        agent = create_tool_calling_agent(llm, tools, prompt)
-        _agent_executor = AgentExecutor(
-            agent=agent,
-            tools=tools,
-            verbose=False,
-            max_iterations=6,
-            handle_parsing_errors=True,
-        )
+        _agent = create_react_agent(llm, tools, prompt=SUPPORT_SYSTEM_PROMPT)
         logger.info("Support Agent initialized.")
-    return _agent_executor
+    return _agent
 
 
 def run(message: str, user_id: str) -> dict:
@@ -89,12 +73,12 @@ def run(message: str, user_id: str) -> dict:
     Returns:
         {"response": str, "escalate": bool, "ticket_id": str | None}
     """
-    executor = _get_agent_executor()
+    agent = _get_agent()
     full_input = f"Customer ID: {user_id}\nCustomer message: {message}"
 
     try:
-        result = executor.invoke({"input": full_input})
-        response_text: str = result.get("output", "")
+        result = agent.invoke({"messages": [HumanMessage(content=full_input)]})
+        response_text: str = result["messages"][-1].content
 
         # Check for escalation flag
         escalate = "ESCALATE_TO_HUMAN" in response_text
@@ -103,11 +87,9 @@ def run(message: str, user_id: str) -> dict:
 
         # Extract ticket ID if present
         ticket_id = None
-        if "TKT-" in response_text:
-            import re
-            match = re.search(r"TKT-\d{8}-[A-Z0-9]{6}", response_text)
-            if match:
-                ticket_id = match.group(0)
+        match = re.search(r"TKT-\d{8}-[A-Z0-9]{6}", response_text)
+        if match:
+            ticket_id = match.group(0)
 
         return {
             "response": response_text,
@@ -121,7 +103,7 @@ def run(message: str, user_id: str) -> dict:
             "response": (
                 "I'm having trouble accessing your account details right now. "
                 "Please contact our support team directly at suporte@infinitepay.io "
-                "or call 0800-XXX-XXXX."
+                "or call 0800-722-0803."
             ),
             "escalate": True,
             "ticket_id": None,

@@ -27,7 +27,10 @@ def web_search(query: str) -> str:
     """
     logger.info("Web search query: %s", query)
     try:
-        from duckduckgo_search import DDGS
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
 
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=5))
