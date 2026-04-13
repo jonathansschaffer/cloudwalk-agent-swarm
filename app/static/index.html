@@ -704,7 +704,7 @@
       if (res.ok) {
         const data = await res.json();
         statusDot.className = 'status-dot online';
-        statusText.textContent = `Online • ${data.documents_indexed} docs indexados`;
+        statusText.textContent = 'Online';
       } else {
         setOffline();
       }
