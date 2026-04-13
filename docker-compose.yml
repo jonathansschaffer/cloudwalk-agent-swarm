@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  agent-swarm:
+    build: .
+    container_name: infinitepay-agent-swarm
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist the ChromaDB vector store and scraping cache between restarts.
+      # This means the knowledge base only needs to be built once.
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      - CHROMA_DB_PATH=/app/data/chroma_db
+      - SCRAPED_CACHE_PATH=/app/data/scraped_cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
