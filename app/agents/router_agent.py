@@ -11,6 +11,7 @@ Workflow:
 import logging
 from typing import TypedDict, Optional, Literal
 
+from anthropic import Anthropic
 from langgraph.graph import StateGraph, END
 
 from app.utils.language_detector import detect_language
@@ -70,7 +71,6 @@ Respond with ONLY the category name, nothing else."""
 
 def _classify_intent(message: str) -> str:
     """Uses Claude to classify the user's intent."""
-    from anthropic import Anthropic
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
     valid_intents = {
