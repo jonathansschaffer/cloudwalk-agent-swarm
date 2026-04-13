@@ -47,8 +47,22 @@ _AGENT_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 # Markdown → Telegram HTML converter
 # ---------------------------------------------------------------------------
 
+# Telegram HTML supports only these tags — anything else must be escaped
+_TELEGRAM_SAFE_TAGS = frozenset(
+    {"b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
+     "code", "pre", "a", "blockquote", "span", "br"}
+)
+# Matches any HTML/XML-like tag (opening, closing, self-closing)
+_HTML_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)([^>]*)>")
+
+
 def _inline_to_html(text: str) -> str:
-    """Convert inline Markdown (bold, italic, code, links) to Telegram HTML."""
+    """
+    Convert inline Markdown to Telegram HTML.
+
+    Also handles the case where the LLM already emitted HTML tags (e.g. <b>…</b>):
+    valid Telegram tags are passed through unchanged; unknown tags are escaped.
+    """
     # Stash inline code spans so their content is not further processed
     stash: dict[str, str] = {}
 
@@ -59,8 +73,33 @@ def _inline_to_html(text: str) -> str:
 
     text = re.sub(r"`([^`\n]+)`", _stash_code, text)
 
-    # Escape HTML special chars in the remaining text
-    text = html.escape(text)
+    # If the LLM already emitted HTML tags, handle text and tags separately
+    # so we don't double-escape valid tags.
+    if _HTML_TAG_RE.search(text):
+        parts = _HTML_TAG_RE.split(text)
+        # split() with a capturing group returns: [text, slash, name, attrs, text, …]
+        out: list[str] = []
+        i = 0
+        while i < len(parts):
+            chunk = parts[i]
+            if i % 4 == 0:
+                # Text fragment between tags — escape HTML special chars
+                out.append(html.escape(chunk))
+            else:
+                # Reassemble the tag from its capture groups: slash, name, attrs
+                slash = parts[i]       # group 1: "/" or ""
+                name = parts[i + 1]    # group 2: tag name
+                attrs = parts[i + 2]   # group 3: attributes
+                i += 2
+                if name.lower() in _TELEGRAM_SAFE_TAGS:
+                    out.append(f"<{slash}{name}{attrs}>")
+                else:
+                    out.append(html.escape(f"<{slash}{name}{attrs}>"))
+            i += 1
+        text = "".join(out)
+    else:
+        # No HTML tags — safe to escape everything
+        text = html.escape(text)
 
     # Bold: **…** or __…__
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
