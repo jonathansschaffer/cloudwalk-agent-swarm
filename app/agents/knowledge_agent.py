@@ -4,6 +4,7 @@ Uses LangGraph's create_react_agent with a ReAct loop.
 """
 
 import logging
+from datetime import date
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
@@ -33,7 +34,13 @@ fees, features, or how things work. Always try this tool FIRST for InfinitePay t
   If the user writes in English, respond entirely in English. Never mix languages.
 - Be concise and factual. Do not invent prices, fees, or features not found in the sources.
 - When citing InfinitePay information, mention the source URL when available.
-- Be friendly and professional."""
+- Be friendly and professional.
+
+## Date Awareness
+The user's message will include the current date in a [Date] tag at the beginning. \
+Use this to correctly interpret relative time expressions like "last weekend", "yesterday", \
+"recently", "this week". When search results are from a different time period than the user \
+asked about, explicitly acknowledge this and clarify the actual date of the information found."""
 
 _agent = None
 
@@ -57,6 +64,10 @@ def run(message: str) -> str:
     """
     Runs the Knowledge Agent on a user message.
 
+    Injects the current date into the message so the agent can correctly
+    interpret relative time expressions ("last weekend", "yesterday", etc.)
+    and validate that search results match the requested time period.
+
     Args:
         message: The user's question (product or general).
 
@@ -64,8 +75,10 @@ def run(message: str) -> str:
         The agent's answer as a string.
     """
     agent = _get_agent()
+    today = date.today().strftime("%A, %B %d, %Y")
+    dated_message = f"[Date: {today}]\n\n{message}"
     try:
-        result = agent.invoke({"messages": [HumanMessage(content=message)]})
+        result = agent.invoke({"messages": [HumanMessage(content=dated_message)]})
         # The last message in the list is the final AI response
         last_message = result["messages"][-1]
         return last_message.content

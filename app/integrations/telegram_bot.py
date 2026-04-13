@@ -10,6 +10,8 @@ Setup:
     2. Copy the token to TELEGRAM_BOT_TOKEN in your .env file
     3. Restart the server — the bot starts automatically
 
+Bot: @CloudWalk_Challenge_Bot
+
 Commands:
     /start  — Welcome message with usage instructions
     /help   — Example questions and available features
@@ -21,6 +23,7 @@ import textwrap
 
 from telegram import Update
 from telegram.constants import ParseMode
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -44,45 +47,68 @@ _AGENT_LABELS = {
     "guardrails": "🛡️ Guardrails",
 }
 
+# Use HTML parse mode — more reliable than Markdown for messages with emojis
 _WELCOME_MESSAGE = textwrap.dedent("""
-    👋 *Olá! Bem-vindo ao InfinitePay Agent Swarm!*
+    👋 <b>Olá! Bem-vindo ao InfinitePay Agent Swarm!</b>
 
     Sou um assistente inteligente da InfinitePay. Posso ajudar com:
 
-    • 💳 *Produtos e taxas* — Maquininha, Pix, Conta Digital, etc.
-    • 🔧 *Suporte à conta* — problemas de login, transferências, bloqueios
-    • 🌐 *Perguntas gerais* — notícias, esportes, informações do dia a dia
-    • 🤝 *Escalação* — precisa falar com um humano? É só pedir!
+    • 💳 <b>Produtos e taxas</b> — Maquininha, Pix, Conta Digital, etc.
+    • 🔧 <b>Suporte à conta</b> — problemas de login, transferências, bloqueios
+    • 🌐 <b>Perguntas gerais</b> — notícias, esportes, informações do dia a dia
+    • 🤝 <b>Escalação</b> — precisa falar com um humano? É só pedir!
 
     Use /help para ver exemplos de perguntas.
 
-    _Pode me perguntar em português ou inglês!_ 🇧🇷🇺🇸
+    <i>Pode me perguntar em português ou inglês!</i>
 """).strip()
 
 _HELP_MESSAGE = textwrap.dedent("""
-    📋 *Exemplos de perguntas que posso responder:*
+    📋 <b>Exemplos de perguntas que posso responder:</b>
 
-    💳 *Sobre InfinitePay:*
+    💳 <b>Sobre InfinitePay:</b>
     • "Quais as taxas da Maquininha Smart?"
     • "Como funciona o Pix Parcelado?"
     • "O que é a Conta Digital InfinitePay?"
     • "What are the fees for credit card payments?"
 
-    🔧 *Suporte à conta:*
+    🔧 <b>Suporte à conta:</b>
     • "Não consigo fazer transferências"
     • "Minha conta está bloqueada"
     • "I can't sign in to my account"
 
-    🌐 *Perguntas gerais:*
-    • "Qual o resultado do último jogo do Palmeiras?"
+    🌐 <b>Perguntas gerais:</b>
+    • "Qual o resultado do último jogo do Santos?"
     • "Quais as principais notícias de hoje?"
 
-    🤝 *Escalação:*
+    🤝 <b>Escalação:</b>
     • "Quero falar com um atendente humano"
     • "I need to speak with a human agent"
 
-    _Basta digitar sua pergunta normalmente!_
+    <i>Basta digitar sua pergunta normalmente!</i>
 """).strip()
+
+
+# ---------------------------------------------------------------------------
+# Helper: send message with Markdown fallback to plain text
+# ---------------------------------------------------------------------------
+
+async def _safe_reply(update: Update, text: str, parse_mode: str = ParseMode.MARKDOWN) -> None:
+    """
+    Sends a reply with the given parse mode.
+    Falls back to plain text if parsing fails (avoids silent failures
+    caused by unescaped Markdown characters in agent responses).
+    """
+    try:
+        await update.message.reply_text(text, parse_mode=parse_mode)
+    except TelegramError as exc:
+        logger.warning("Failed to send with parse_mode=%s (%s). Retrying as plain text.", parse_mode, exc)
+        try:
+            # Strip any Markdown/HTML and send as plain text
+            plain = text.replace("*", "").replace("_", "").replace("`", "").replace("<b>", "").replace("</b>", "").replace("<i>", "").replace("</i>", "")
+            await update.message.reply_text(plain)
+        except TelegramError as exc2:
+            logger.error("Failed to send plain text reply: %s", exc2)
 
 
 # ---------------------------------------------------------------------------
@@ -91,12 +117,12 @@ _HELP_MESSAGE = textwrap.dedent("""
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /start command — sends the welcome message."""
-    await update.message.reply_text(_WELCOME_MESSAGE, parse_mode=ParseMode.MARKDOWN)
+    await _safe_reply(update, _WELCOME_MESSAGE, parse_mode=ParseMode.HTML)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /help command — sends usage examples."""
-    await update.message.reply_text(_HELP_MESSAGE, parse_mode=ParseMode.MARKDOWN)
+    await _safe_reply(update, _HELP_MESSAGE, parse_mode=ParseMode.HTML)
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +135,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     The user_id is derived from the Telegram user ID to ensure each
     user has a consistent session. A typing indicator is shown while
-    the agent processes the request.
+    the agent processes the request (process_message is synchronous,
+    so it runs in a thread pool to avoid blocking the event loop).
     """
     user_text = update.message.text
     telegram_user_id = update.effective_user.id
@@ -124,8 +151,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
     try:
-        # process_message is synchronous and CPU/IO bound — run in thread pool
-        loop = asyncio.get_event_loop()
+        # process_message is synchronous/blocking — run in thread pool
+        # Use get_running_loop() (not deprecated get_event_loop()) to get
+        # the loop that is actually running this coroutine
+        loop = asyncio.get_running_loop()
         state = await loop.run_in_executor(None, process_message, user_text, user_id)
     except Exception as exc:
         logger.error("Agent Swarm error for Telegram user %s: %s", user_id, exc)
@@ -143,23 +172,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Compose footer with agent badge
     agent_label = _AGENT_LABELS.get(agent_used, agent_used)
-    footer_parts = [f"\n\n— _{agent_label}_"]
+    footer_parts = [f"\n\n— <i>{agent_label}</i>"]
 
     if ticket_id:
-        footer_parts.append(f"\n🎫 *Ticket criado:* `{ticket_id}`")
+        footer_parts.append(f"\n🎫 <b>Ticket criado:</b> <code>{ticket_id}</code>")
 
     if escalated and agent_used != "escalation_agent":
         footer_parts.append(
-            "\n\n⚠️ _Esta conversa foi escalada para nossa equipe humana._"
+            "\n\n⚠️ <i>Esta conversa foi escalada para nossa equipe humana.</i>"
         )
 
     full_message = response_text + "".join(footer_parts)
 
     # Telegram has a 4096 character limit per message
     if len(full_message) > 4000:
-        full_message = full_message[:3990] + "\n\n_[mensagem truncada]_"
+        full_message = full_message[:3990] + "\n\n<i>[mensagem truncada]</i>"
 
-    await update.message.reply_text(full_message, parse_mode=ParseMode.MARKDOWN)
+    await _safe_reply(update, full_message, parse_mode=ParseMode.HTML)
+
+
+# ---------------------------------------------------------------------------
+# Error handler
+# ---------------------------------------------------------------------------
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Logs all Telegram errors so they are visible in the server logs
+    instead of being swallowed silently by the polling loop.
+    """
+    logger.error("Telegram bot encountered an error: %s", context.error, exc_info=context.error)
 
 
 # ---------------------------------------------------------------------------
@@ -183,5 +224,6 @@ def build_application(token: str) -> Application:
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
+    application.add_error_handler(error_handler)
 
     return application
