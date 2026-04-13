@@ -1,6 +1,19 @@
 """
 Mock user database simulating a real CRM/user management system.
-In production, this would be replaced by actual database calls (e.g., PostgreSQL, DynamoDB).
+
+In production, these functions would be replaced by authenticated HTTP calls
+to a CRM API (e.g., Salesforce, HubSpot) or direct database queries (PostgreSQL).
+
+The 5 pre-configured users cover distinct support scenarios:
+
+  client789 — Active account, KYC verified, full limits.  Standard user.
+  user_002  — Suspended, KYC pending, 6 failed logins.    Tests suspension flow.
+  user_003  — Pending KYC, new account, low limits.       Tests onboarding flow.
+  user_004  — Enterprise plan, limit exhausted today.     Tests limit-exceeded flow.
+  user_005  — Active, 2 failed logins, failed transaction.Tests partial issues.
+
+All user data is read-only in this mock — no mutations are exposed,
+which mirrors a typical read-only CRM integration for support agents.
 """
 
 from typing import Optional
@@ -121,7 +134,19 @@ def get_user(user_id: str) -> Optional[dict]:
 
 def get_account_status(user_id: str) -> dict:
     """
-    Returns account status with diagnostic hints for the support agent.
+    Returns account status enriched with diagnostic hints for the support agent.
+
+    The `diagnostic_hints` list contains human-readable strings that the
+    Support Agent uses to explain the root cause of issues to the customer.
+    Hints are generated based on account state (suspension, KYC status,
+    failed login count, remaining transfer limit).
+
+    Args:
+        user_id: The customer's unique identifier.
+
+    Returns:
+        Dict with account fields and a `diagnostic_hints` list, or
+        {"found": False, "user_id": user_id} if the user does not exist.
     """
     user = get_user(user_id)
     if not user:

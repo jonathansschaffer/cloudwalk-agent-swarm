@@ -1,8 +1,22 @@
 """
-Guardrails: input and output content filtering.
+Guardrails: content filtering for inputs and outputs of the Agent Swarm.
 
-Input guardrails block messages before they reach the agents.
-Output guardrails sanitize agent responses before they are returned to the user.
+Two-stage safety pipeline:
+
+INPUT GUARDRAILS (check_input)
+  Stage 1 — Regex pre-filter: instantly blocks common prompt injection patterns
+             (e.g. "ignore previous instructions", "you are now", "DAN mode").
+  Stage 2 — LLM classifier: Claude evaluates nuanced cases (hate speech,
+             fraud attempts, spam) and returns SAFE or UNSAFE.
+  If either stage fails, the message is blocked before reaching any agent.
+
+OUTPUT GUARDRAILS (sanitize_output)
+  Strips PII that may have been included in agent responses:
+  - Brazilian CPF numbers (XXX.XXX.XXX-XX)
+  - 16-digit credit/debit card numbers
+
+In production, output guardrails could also validate that responses do not
+contain data from other users (cross-tenant leakage prevention).
 """
 
 import logging
