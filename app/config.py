@@ -68,6 +68,18 @@ LLM_MAX_TOKENS: int = 2048
 LLM_TEMPERATURE: float = 0.0
 
 # ---------------------------------------------------------------------------
+# CORS
+# ---------------------------------------------------------------------------
+
+# Space-separated list of allowed origins for the API.
+# In production, set this to your Railway/deployment URL.
+# Example: "https://your-app.railway.app"
+ALLOWED_ORIGINS: list[str] = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:8000 http://127.0.0.1:8000",
+).split()
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 

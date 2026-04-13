@@ -17,9 +17,11 @@ venv/
 env/
 .venv/
 
-# Data (vector DB and cache - can be regenerated)
-data/chroma_db/
+# Scraping cache (can be regenerated)
 data/scraped_cache/
+
+# ChromaDB data is committed to the repo so Railway skips the rebuild on startup.
+# To force a full rebuild: python scripts/build_knowledge_base.py --rebuild
 
 # Testing
 .pytest_cache/

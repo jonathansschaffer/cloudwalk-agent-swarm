@@ -29,7 +29,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.utils.logger import setup_logging
-from app.config import validate_config, TELEGRAM_BOT_TOKEN
+from app.config import validate_config, TELEGRAM_BOT_TOKEN, ALLOWED_ORIGINS
 from app.api.routes import router, limiter
 from app.rag.pipeline import build_knowledge_base
 
@@ -149,10 +149,10 @@ app.add_middleware(SlowAPIMiddleware)
 # Security headers on every response
 app.add_middleware(SecurityHeadersMiddleware)
 
-# CORS — restrict to same origin for demo; widen for production deployments
+# CORS — configured via ALLOWED_ORIGINS env variable (defaults to localhost only)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
