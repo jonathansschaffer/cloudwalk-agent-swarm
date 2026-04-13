@@ -40,7 +40,16 @@ fees, features, or how things work. Always try this tool FIRST for InfinitePay t
 The user's message will include the current date in a [Date] tag at the beginning. \
 Use this to correctly interpret relative time expressions like "last weekend", "yesterday", \
 "recently", "this week". When search results are from a different time period than the user \
-asked about, explicitly acknowledge this and clarify the actual date of the information found."""
+asked about, explicitly acknowledge this and clarify the actual date of the information found.
+
+## Web Search Strategy
+When searching for recent sports results or news:
+- First search: use the specific team/topic + "resultado" or "score"
+- If results are incomplete or from the wrong date, search AGAIN with a more specific query \
+  including the date (e.g., "Santos FC resultado abril 2026")
+- Combine information from multiple search results when needed
+- If after two searches you still cannot find specific details, say what you DID find \
+  (partial info, approximate date) rather than giving up entirely."""
 
 _agent = None
 

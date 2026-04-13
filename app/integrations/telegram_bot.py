@@ -49,18 +49,11 @@ _AGENT_LABELS = {
 
 # Use HTML parse mode — more reliable than Markdown for messages with emojis
 _WELCOME_MESSAGE = textwrap.dedent("""
-    👋 <b>Olá! Bem-vindo ao InfinitePay Agent Swarm!</b>
+    👋 Olá! Sou o assistente da <b>InfinitePay</b>.
 
-    Sou um assistente inteligente da InfinitePay. Posso ajudar com:
+    Pergunte sobre produtos, taxas, sua conta ou qualquer coisa — em português ou inglês.
 
-    • 💳 <b>Produtos e taxas</b> — Maquininha, Pix, Conta Digital, etc.
-    • 🔧 <b>Suporte à conta</b> — problemas de login, transferências, bloqueios
-    • 🌐 <b>Perguntas gerais</b> — notícias, esportes, informações do dia a dia
-    • 🤝 <b>Escalação</b> — precisa falar com um humano? É só pedir!
-
-    Use /help para ver exemplos de perguntas.
-
-    <i>Pode me perguntar em português ou inglês!</i>
+    Use /help para ver exemplos.
 """).strip()
 
 _HELP_MESSAGE = textwrap.dedent("""
@@ -93,22 +86,26 @@ _HELP_MESSAGE = textwrap.dedent("""
 # Helper: send message with Markdown fallback to plain text
 # ---------------------------------------------------------------------------
 
-async def _safe_reply(update: Update, text: str, parse_mode: str = ParseMode.MARKDOWN) -> None:
+async def _safe_reply(update: Update, text: str, parse_mode: str | None = None) -> None:
     """
-    Sends a reply with the given parse mode.
-    Falls back to plain text if parsing fails (avoids silent failures
-    caused by unescaped Markdown characters in agent responses).
+    Sends a reply with the given parse mode, falling back to plain text on error.
+
+    Args:
+        update:     Telegram update object.
+        text:       Message text to send.
+        parse_mode: ParseMode.HTML, ParseMode.MARKDOWN, or None (plain text).
     """
     try:
         await update.message.reply_text(text, parse_mode=parse_mode)
     except TelegramError as exc:
+        if parse_mode is None:
+            logger.error("Failed to send plain text reply: %s", exc)
+            return
         logger.warning("Failed to send with parse_mode=%s (%s). Retrying as plain text.", parse_mode, exc)
         try:
-            # Strip any Markdown/HTML and send as plain text
-            plain = text.replace("*", "").replace("_", "").replace("`", "").replace("<b>", "").replace("</b>", "").replace("<i>", "").replace("</i>", "")
-            await update.message.reply_text(plain)
+            await update.message.reply_text(text)
         except TelegramError as exc2:
-            logger.error("Failed to send plain text reply: %s", exc2)
+            logger.error("Failed to send plain text fallback reply: %s", exc2)
 
 
 # ---------------------------------------------------------------------------
@@ -170,25 +167,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     ticket_id = state.get("ticket_id")
     escalated = state.get("escalated", False)
 
-    # Compose footer with agent badge
+    # Compose footer with agent badge (plain text — no parse mode to avoid
+    # issues with markdown symbols like %, |, >, * in agent responses)
     agent_label = _AGENT_LABELS.get(agent_used, agent_used)
-    footer_parts = [f"\n\n— <i>{agent_label}</i>"]
+    footer_parts = [f"\n\n— {agent_label}"]
 
     if ticket_id:
-        footer_parts.append(f"\n🎫 <b>Ticket criado:</b> <code>{ticket_id}</code>")
+        footer_parts.append(f"\n🎫 Ticket criado: {ticket_id}")
 
     if escalated and agent_used != "escalation_agent":
-        footer_parts.append(
-            "\n\n⚠️ <i>Esta conversa foi escalada para nossa equipe humana.</i>"
-        )
+        footer_parts.append("\n\n⚠️ Esta conversa foi escalada para nossa equipe humana.")
 
     full_message = response_text + "".join(footer_parts)
 
     # Telegram has a 4096 character limit per message
     if len(full_message) > 4000:
-        full_message = full_message[:3990] + "\n\n<i>[mensagem truncada]</i>"
+        full_message = full_message[:3990] + "\n\n[mensagem truncada]"
 
-    await _safe_reply(update, full_message, parse_mode=ParseMode.HTML)
+    # Send as plain text (no parse_mode) — agent responses contain markdown
+    # tables, %, |, > characters that would break HTML or Markdown parsing
+    await _safe_reply(update, full_message, parse_mode=None)
 
 
 # ---------------------------------------------------------------------------
