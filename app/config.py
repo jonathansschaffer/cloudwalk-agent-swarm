@@ -21,6 +21,14 @@ ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 # If not set, the Telegram integration is disabled automatically.
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
+# Telegram polling switch. Telegram allows only ONE long-polling instance per
+# bot — if Railway (prod) is already polling, set TELEGRAM_POLLING_ENABLED=false
+# locally to avoid noisy NetworkError/Conflict logs while still keeping the
+# token configured for code-reuse in tests.
+TELEGRAM_POLLING_ENABLED: bool = os.getenv(
+    "TELEGRAM_POLLING_ENABLED", "true"
+).lower() in {"1", "true", "yes"}
+
 # ---------------------------------------------------------------------------
 # Storage Paths
 # ---------------------------------------------------------------------------

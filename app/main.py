@@ -31,7 +31,12 @@ from slowapi.middleware import SlowAPIMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.utils.logger import setup_logging
-from app.config import validate_config, TELEGRAM_BOT_TOKEN, ALLOWED_ORIGINS
+from app.config import (
+    validate_config,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_POLLING_ENABLED,
+    ALLOWED_ORIGINS,
+)
 from app.api.routes import router, limiter
 from app.auth.routes import router as auth_router
 from app.database.db import SessionLocal, init_db
@@ -151,9 +156,15 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Knowledge base is empty — RAG responses may be limited.")
 
-    # Start Telegram bot (optional — only if token is configured)
+    # Start Telegram bot (optional — only if token is configured AND polling is
+    # enabled; when running locally against a bot that Railway is already polling,
+    # set TELEGRAM_POLLING_ENABLED=false to avoid NetworkError/Conflict noise).
     tg_app = None
-    if TELEGRAM_BOT_TOKEN:
+    if TELEGRAM_BOT_TOKEN and not TELEGRAM_POLLING_ENABLED:
+        logger.info(
+            "TELEGRAM_BOT_TOKEN is set but TELEGRAM_POLLING_ENABLED=false — bot disabled."
+        )
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_POLLING_ENABLED:
         try:
             from app.integrations.telegram_bot import build_application
             tg_app = build_application(TELEGRAM_BOT_TOKEN)

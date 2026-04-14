@@ -25,3 +25,6 @@ def setup_logging() -> None:
     logging.getLogger("chromadb").setLevel(logging.WARNING)
     logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+    # passlib + bcrypt 4.x emit a noisy (but trapped) AttributeError because
+    # bcrypt removed the `__about__` attribute in 4.0. Hashing itself works.
+    logging.getLogger("passlib").setLevel(logging.ERROR)
