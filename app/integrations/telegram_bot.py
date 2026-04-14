@@ -264,7 +264,12 @@ def _consume_link_code(code: str, telegram_user_id: int) -> tuple[bool, str]:
             return False, "Código não encontrado. Gere um novo no app web."
         if row.used_at is not None:
             return False, "Este código já foi usado."
-        if row.expires_at < now:
+        # SQLite returns naive datetimes even if stored as UTC-aware. Normalize
+        # both sides to aware-UTC before comparing so this doesn't crash on SQLite.
+        expires_at = row.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < now:
             return False, "Este código expirou. Gere um novo no app web."
 
         # Replace any existing link for this Telegram account
