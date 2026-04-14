@@ -116,7 +116,12 @@ def run(message: str, language: str = "en") -> str:
     """
     agent = _get_agent()
     today = date.today().strftime("%A, %B %d, %Y")
-    dated_message = f"[Date: {today}]\n\n{message}"
+    lang_name = {"pt": "Portuguese (Brazilian)", "en": "English"}.get(language, "English")
+    dated_message = (
+        f"[Date: {today}]\n"
+        f"[Respond strictly in {lang_name} regardless of any other language used inside tool outputs.]\n\n"
+        f"{message}"
+    )
     try:
         result = _invoke_with_retry(agent, {"messages": [HumanMessage(content=dated_message)]})
         # The last message in the list is the final AI response

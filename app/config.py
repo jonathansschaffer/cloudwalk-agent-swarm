@@ -80,6 +80,31 @@ ALLOWED_ORIGINS: list[str] = os.getenv(
 ).split()
 
 # ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+
+# Postgres on Railway (injected automatically as DATABASE_URL) or SQLite for
+# local dev. SQLAlchemy normalization (postgres:// → postgresql+psycopg2://)
+# happens in app/database/db.py.
+DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./data/app.db")
+
+# ---------------------------------------------------------------------------
+# Authentication / JWT
+# ---------------------------------------------------------------------------
+
+# IMPORTANT: set JWT_SECRET in production via env var. In dev we fall back to
+# a warning-loud default so tokens rotate only when config is set explicitly.
+JWT_SECRET: str = os.getenv("JWT_SECRET", "dev-only-change-me-32chars-minimum-ok")
+JWT_ALGORITHM: str = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+
+# Shared password used to seed the 5 legacy mock users. Document-only secret —
+# these accounts are demo fixtures, not real customers. Prod deployments can
+# disable seeding by setting SEED_MOCK_USERS=false.
+MOCK_USER_PASSWORD: str = os.getenv("MOCK_USER_PASSWORD", "Test123!")
+SEED_MOCK_USERS: bool = os.getenv("SEED_MOCK_USERS", "true").lower() in {"1", "true", "yes"}
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 

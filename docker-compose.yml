@@ -1,20 +1,41 @@
 version: "3.9"
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: infinitepay-postgres
+    environment:
+      POSTGRES_USER: infinitepay
+      POSTGRES_PASSWORD: infinitepay
+      POSTGRES_DB: infinitepay
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U infinitepay"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   agent-swarm:
     build: .
     container_name: infinitepay-agent-swarm
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8000:8000"
     volumes:
       # Persist the ChromaDB vector store and scraping cache between restarts.
-      # This means the knowledge base only needs to be built once.
       - ./data:/app/data
     env_file:
       - .env
     environment:
       - CHROMA_DB_PATH=/app/data/chroma_db
       - SCRAPED_CACHE_PATH=/app/data/scraped_cache
+      - DATABASE_URL=postgresql+psycopg2://infinitepay:infinitepay@postgres:5432/infinitepay
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -22,3 +43,6 @@ services:
       timeout: 10s
       start_period: 120s
       retries: 3
+
+volumes:
+  postgres_data:

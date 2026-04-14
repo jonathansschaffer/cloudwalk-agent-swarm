@@ -9,6 +9,7 @@ Workflow:
 """
 
 import logging
+import time
 from typing import TypedDict, Optional, Literal
 
 from anthropic import Anthropic
@@ -302,13 +303,17 @@ def process_message(message: str, user_id: str) -> AgentState:
     }
 
     graph = _get_graph()
+    started = time.monotonic()
     final_state: AgentState = graph.invoke(initial_state)
+    elapsed_ms = (time.monotonic() - started) * 1000.0
 
     logger.info(
-        "Response generated | agent=%s | intent=%s | escalated=%s",
+        "agent_response agent=%s intent=%s escalated=%s lang=%s latency_ms=%.1f",
         final_state.get("agent_used"),
         final_state.get("intent"),
         final_state.get("escalated"),
+        final_state.get("language"),
+        elapsed_ms,
     )
 
     return final_state

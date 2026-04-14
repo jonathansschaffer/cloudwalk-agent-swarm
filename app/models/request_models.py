@@ -10,12 +10,6 @@ class ChatRequest(BaseModel):
         description="The user's message or question.",
         examples=["What are the fees of the Maquininha Smart?"],
     )
-    user_id: str = Field(
-        ...,
-        min_length=1,
-        description="A unique identifier for the user.",
-        examples=["client789"],
-    )
 
 
 class ChatResponse(BaseModel):

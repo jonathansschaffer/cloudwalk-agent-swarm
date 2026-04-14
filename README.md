@@ -540,30 +540,89 @@ I used AI assistants throughout development:
 
 ---
 
+## Implementation History
+
+A condensed log of the major iterations on the project, in order:
+
+1. **MVP swarm (initial commit)** — FastAPI + LangGraph router + Knowledge/Support/Escalation/Guardrails agents; in-memory CRM, tickets, and chat history; web chat UI + manual user switcher.
+2. **RAG hardening** — multilingual `all-MiniLM-L6-v2`, persistent ChromaDB, scrape cache, retry/backoff via `tenacity`, cross-language retrieval fix.
+3. **Telegram channel** — long-polling bot with single-thread executor (serializes Anthropic calls), Markdown→Telegram-HTML converter, multi-attempt safe reply.
+4. **Railway deployment** — Dockerfile with CPU-only torch wheel, `railway.toml`, externalized healthcheck, `data/chroma_db` committed to skip rebuilds.
+5. **Persistent storage migration** — SQLAlchemy 2.0 + PostgreSQL (SQLite fallback for local dev). All in-memory stores (`mock_users`, `mock_tickets`, `chat_history`) migrated to ORM with `ON DELETE CASCADE` for LGPD right-to-erasure. Idempotent seeding of the 5 demo users keyed by `legacy_id` so existing tests/scripts keep working.
+6. **Authentication + LGPD compliance** — bcrypt-hashed passwords, JWT (HS256) via PyJWT, FastAPI `HTTPBearer` dependency, mandatory LGPD consent on registration, self-service `DELETE /auth/me` cascade.
+7. **Telegram account linking** — one-shot 6-char codes generated in the web UI (`POST /auth/telegram/code`, 10-min TTL), consumed via `/link <code>` in the bot. Unlinked Telegram accounts are rejected with onboarding instructions.
+8. **Per-user data isolation** — `/chat`, `/history`, `/tickets` all derive `user_id` from the JWT — no path parameter, no enumeration. The legacy user-switcher in the web UI was removed.
+9. **Language reliability fix** — explicit `[Respond strictly in <Language>]` directive injected into the Knowledge and Support agent inputs (was previously relying on a vague system-prompt instruction, which leaked PT replies for EN questions on Brazilian product topics).
+10. **Telegram UX polish** — collapse runs of blank lines in the rendered HTML, agent label + language badge in the signature, mirroring the web UI pattern.
+11. **Observability foundations** — request timing middleware, in-memory counters exposed at `/metrics`, structured `agent_response` log line with per-turn latency.
+
+## Security Audit
+
+Snapshot of the security posture after the auth + persistence migration. Items marked **OK** are addressed in the current code; items marked **TODO** are tracked in the roadmap below.
+
+| Risk                                      | Status | Mitigation                                                                                          |
+|-------------------------------------------|--------|------------------------------------------------------------------------------------------------------|
+| Plaintext password storage                | OK     | bcrypt via `passlib[bcrypt]`; never logged.                                                          |
+| Token forgery                             | OK     | JWT HS256 with `JWT_SECRET` from env (must be ≥ 32 random bytes in prod). Tokens carry `iat`/`exp`.  |
+| Cross-user data access                    | OK     | All authenticated endpoints derive `user_id` from the JWT subject — no path parameter is trusted.    |
+| User enumeration via login                | OK     | `POST /auth/login` returns the same generic 401 for unknown email and wrong password.                |
+| Brute-force login                         | OK     | `slowapi` rate limit (`5/minute` per IP) on `/auth/login` and `/auth/register`.                      |
+| Prompt injection / abusive input          | OK     | Input guardrail (regex + Claude classifier, EN/PT) before any agent runs. Output PII sanitization.   |
+| PII leakage in agent responses            | OK     | `guardrails.sanitize_output` strips CPF, card numbers, phone, and email patterns from every reply.   |
+| Session token transport                   | OK     | `Authorization: Bearer …` only; no cookies → no CSRF surface. CORS restricted via `ALLOWED_ORIGINS`. |
+| Clickjacking / MIME sniffing / XSS        | OK     | `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, strict `Content-Security-Policy`.        |
+| Telegram channel hijack                   | OK     | One Telegram account ↔ one App user; codes are single-use, 10-min TTL, A-Z0-9 (≈ 2 ⁱⁿ ³¹ entropy).  |
+| LGPD right-to-erasure                     | OK     | `DELETE /auth/me` cascades through tickets, chat history, telegram link, transactions.               |
+| LGPD explicit consent                     | OK     | Registration is rejected unless `lgpd_consent_at` is set; consent timestamp persisted.               |
+| SQL injection                             | OK     | SQLAlchemy ORM parameterizes all queries; no raw SQL in app code.                                    |
+| DoS / Anthropic API exhaustion            | Partial| Per-IP rate limit (`20/min`) on `/chat`. Telegram serializes via single-thread executor. **TODO:** add per-JWT-user limit so a single authenticated user can't burn the IP budget for an entire NAT. |
+| Concurrent state race (transfer limit)   | Partial| Mock CRM only writes on ticket creation today, so no race in practice. **TODO:** when wired to a real CRM, wrap `transfer_limit_remaining` updates in a `SELECT … FOR UPDATE`. |
+| Secret rotation                           | TODO   | `JWT_SECRET` rotation invalidates all sessions instantly — design a key-id-aware decode path before going live. |
+| Audit log                                 | TODO   | `agent_response` and `http` logs capture latency + agent + status, but no append-only audit trail of auth events yet. |
+| HTTPS termination                         | TODO   | App speaks HTTP; production must terminate TLS at the platform proxy (Railway does this) and forward `X-Forwarded-Proto`. |
+
+### Concurrency analysis
+
+- **Within a single request**: each request uses its own `SessionLocal()` context — no shared mutable state.
+- **Same user, parallel requests**: `chat_history` inserts are independent rows (interleaving is fine); `tickets` IDs include a UUID4 suffix (no collision); `telegram/code` invalidates prior unused codes inside one transaction (last writer wins, intended).
+- **Different users**: completely independent at the DB and agent layers.
+- **Anthropic rate limits**: handled by `tenacity` (3 retries, exponential backoff 2–10 s). The Telegram bot serializes calls through a single-threaded executor; HTTP `/chat` does not — this is intentional so unrelated users aren't blocked behind a slow agent turn.
+
 ## Production Roadmap
 
 Items are grouped by phase. Each phase depends on the previous one being stable.
 
-### Phase 1 — Deployment
+### Phase 1 — Public deployment (in progress)
 
-- [ ] **Vercel deployment**: Deploy the API and web UI to Vercel and generate a public URL for testing; configure environment variables as Vercel secrets
-- [ ] **Telegram webhook**: Replace long polling with HTTPS webhook (required for serverless environments like Vercel — long polling needs a persistent process)
-- [ ] **Telegram → web UI redirect**: When a Telegram user makes an account-specific request (support, history, login issues), the bot replies suggesting they access the InfinitePay Assistant web UI at the Vercel URL for the full experience
+- [x] **PostgreSQL persistence** (Railway addon + local docker-compose service)
+- [x] **JWT auth + LGPD-compliant registration**
+- [x] **Telegram account linking via one-shot code**
+- [x] **Railway healthcheck fix** (removed `localhost:8000` from Dockerfile, kept Railway external probe via `railway.toml`)
+- [ ] **Public Railway URL + Telegram webhook** (replace long polling once HTTPS endpoint is live; required for serverless-style deploys)
+- [ ] **Production secrets rotation** — generate a strong `JWT_SECRET` and rotate `MOCK_USER_PASSWORD` away from the seeded default before any external testing
+- [ ] **Per-JWT-user rate limit** on `/chat` (currently per-IP only)
 
-### Phase 2 — Observability & Quality
+### Phase 2 — Observability & quality
 
-- [ ] **Observability**: Integrate LangSmith for end-to-end agent trace monitoring (diagnose missed messages, slow responses, tool failures); add Prometheus/Grafana for infrastructure metrics
-- [ ] **RAG evaluation**: Build a golden Q&A dataset to run automated regression tests on retrieval quality; track MRR and Recall@K metrics after each knowledge base update
-- [ ] **Load testing**: Run k6 or Locust against the Vercel URL to measure P95/P99 latency with concurrent users and identify bottlenecks
+- [x] **Request timing middleware + `/metrics` counters + structured `agent_response` logs**
+- [ ] **LangSmith trace export** for the agent graph (per-node latency + tool calls)
+- [ ] **Prometheus exporter** at `/metrics` (current endpoint is JSON for quick inspection — switch to text format and scrape with Grafana Cloud free tier)
+- [ ] **RAG evaluation harness** — golden Q&A set, MRR / Recall@K tracked per knowledge-base build
+- [ ] **Load test** with k6 or Locust against the Railway URL (P95/P99 latency budgets)
+- [ ] **Cross-language retrieval audit** — the EN ↔ PT asymmetry on Brazilian-product queries (e.g. Maquininha pricing) is partially addressed by the multilingual embedding model and the explicit language directive, but a dedicated test fixture is still missing
 
-### Phase 3 — Security & Data
+### Phase 3 — Hardening & data
 
-- [ ] **Mock database security**: Harden CRM mock data access — prevent user enumeration via `/history`, enforce strict `user_id` ownership checks, ensure no sensitive fields leak through the API response layer
-- [ ] **Authentication**: Add JWT-based authentication to the `/chat` and `/history` endpoints for multi-tenant environments; each token scoped to a single `user_id`
-- [ ] **Persistent history**: Replace the in-memory conversation store (`chat_history.py`) with Redis or PostgreSQL so history survives server restarts
-- [ ] **Real CRM**: Replace `mock_users.py` with a real CRM API integration (HubSpot, Salesforce, or internal CRM); `lookup_account_status` and `get_transaction_history` tools point to live data
+- [x] **In-memory stores migrated to PostgreSQL with cascade-deletion**
+- [x] **Per-user isolation enforced via JWT subject (no enumeration)**
+- [x] **Input/output guardrails (prompt-injection blocking + PII sanitization)**
+- [ ] **Audit log table** (auth events, ticket lifecycle, escalations) — append-only
+- [ ] **Real CRM integration** — replace the inline CRM columns on `users` with a thin adapter to HubSpot / Salesforce / internal API; add `SELECT … FOR UPDATE` around limit updates
+- [ ] **Background RAG warm-up** so `/health` returns immediately even on the very first cold start
 
-### Phase 4 — Performance & Scale
+### Phase 4 — Performance & scale
 
-- [ ] **Response cache**: Use Redis to cache frequent knowledge questions (e.g. "What are Maquininha fees?") and return answers without calling the LLM, reducing latency and cost
-- [ ] **Incremental RAG**: Auto-detect changes on InfinitePay pages (sitemap diff or scheduled scrape) and update only the changed chunks in ChromaDB, without a full rebuild
+- [ ] **Response cache** — Redis layer for frequent KB questions (cache key = normalized question + language)
+- [ ] **Incremental RAG** — sitemap diff + per-chunk re-embedding, instead of full rebuilds
+- [ ] **Streaming responses** — surface tokens to the web UI via SSE so long answers feel responsive
+- [ ] **Multi-region read replicas** if user base spans LATAM

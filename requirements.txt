@@ -42,6 +42,16 @@ slowapi>=0.1.9
 # Retry Logic
 tenacity>=8.0.0
 
+# Database (PostgreSQL via Railway addon; falls back to SQLite for local dev)
+sqlalchemy>=2.0.30
+psycopg2-binary>=2.9.9
+
+# Authentication
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.0,<5.0.0
+PyJWT>=2.9.0
+email-validator>=2.2.0
+
 # Testing
 pytest>=8.3.0
 httpx>=0.28.0

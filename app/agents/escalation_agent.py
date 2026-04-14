@@ -69,7 +69,7 @@ def run(
         priority="high",
     )
     ticket_id = ticket["ticket_id"]
-    lang_name = "pt" if language == "pt" else "en"
+    lang_name = "Brazilian Portuguese" if language == "pt" else "English"
 
     prompt = _ESCALATION_PROMPT.format(
         user_id=user_id,

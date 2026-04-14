@@ -27,9 +27,10 @@ RUN mkdir -p data/chroma_db data/scraped_cache
 
 EXPOSE 8000
 
-# Give 5 minutes for first start: embedding model downloads (~90 MB) on first use
-HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=5 \
-    CMD curl -f http://localhost:8000/health || exit 1
+# No Dockerfile HEALTHCHECK: Railway provides its own external healthcheck via
+# railway.toml (healthcheckPath=/health). A container HEALTHCHECK hard-coded to
+# localhost:8000 conflicts with Railway's dynamic $PORT and causes false failures.
+# For local docker-compose runs, the healthcheck lives in docker-compose.yml.
 
 # Railway injects $PORT; falls back to 8000 for local runs.
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

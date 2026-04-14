@@ -19,20 +19,32 @@ _collection: Optional[Collection] = None
 
 
 def _get_collection() -> Collection:
-    """Lazy-initialises and returns the ChromaDB collection."""
+    """Lazy-initialises and returns the ChromaDB collection.
+
+    Re-initialises if the cached collection becomes invalid (e.g. after a
+    SQLite lock is released when a competing process exits).
+    """
     global _collection
-    if _collection is None:
-        os.makedirs(CHROMA_DB_PATH, exist_ok=True)
-        client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
-        _collection = client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
-        logger.info(
-            "ChromaDB collection '%s' ready (%d documents).",
-            COLLECTION_NAME,
-            _collection.count(),
-        )
+    if _collection is not None:
+        # Validate cached collection is still accessible
+        try:
+            _collection.count()
+            return _collection
+        except Exception:
+            logger.warning("Cached ChromaDB collection became invalid — reinitialising.")
+            _collection = None
+
+    os.makedirs(CHROMA_DB_PATH, exist_ok=True)
+    client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+    _collection = client.get_or_create_collection(
+        name=COLLECTION_NAME,
+        metadata={"hnsw:space": "cosine"},
+    )
+    logger.info(
+        "ChromaDB collection '%s' ready (%d documents).",
+        COLLECTION_NAME,
+        _collection.count(),
+    )
     return _collection
 
 

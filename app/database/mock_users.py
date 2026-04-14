@@ -1,161 +1,63 @@
 """
-Mock user database simulating a real CRM/user management system.
+CRM lookup service (DB-backed).
 
-In production, these functions would be replaced by authenticated HTTP calls
-to a CRM API (e.g., Salesforce, HubSpot) or direct database queries (PostgreSQL).
+Historical name (`mock_users`) kept to avoid a sweeping rename — the contents
+are no longer in-memory. All reads go through SQLAlchemy and return plain
+dicts so the LangChain tools keep their JSON-friendly contract.
 
-The 5 pre-configured users cover distinct support scenarios:
-
-  client789 — Active account, KYC verified, full limits.  Standard user.
-  user_002  — Suspended, KYC pending, 6 failed logins.    Tests suspension flow.
-  user_003  — Pending KYC, new account, low limits.       Tests onboarding flow.
-  user_004  — Enterprise plan, limit exhausted today.     Tests limit-exceeded flow.
-  user_005  — Active, 2 failed logins, failed transaction.Tests partial issues.
-
-All user data is read-only in this mock — no mutations are exposed,
-which mirrors a typical read-only CRM integration for support agents.
+The agent sees authenticated users only: `user_id` here is the DB id as a
+string. For backwards-compat with the 5 seeded fixtures, a legacy-id lookup
+(e.g. "client789") also works.
 """
 
-from typing import Optional
-from copy import deepcopy
+from __future__ import annotations
 
-MOCK_USERS: dict = {
-    "client789": {
-        "name": "Carlos Andrade",
-        "email": "carlos.andrade@email.com",
-        "account_status": "active",
-        "kyc_verified": True,
-        "plan": "InfinitePay Pro",
-        "since": "2023-06-10",
-        "transfer_limit_daily": 10000.00,
-        "transfer_limit_remaining": 10000.00,
-        "failed_login_attempts": 0,
-        "transactions": [
-            {
-                "id": "txn_001",
-                "type": "pix_out",
-                "amount": 250.00,
-                "date": "2026-04-10",
-                "status": "completed",
-                "description": "Pagamento fornecedor",
-            },
-            {
-                "id": "txn_002",
-                "type": "card_payment_received",
-                "amount": 1500.00,
-                "date": "2026-04-11",
-                "status": "completed",
-                "description": "Venda débito",
-            },
-            {
-                "id": "txn_003",
-                "type": "pix_in",
-                "amount": 300.00,
-                "date": "2026-04-12",
-                "status": "completed",
-                "description": "Recebimento cliente",
-            },
-        ],
-    },
-    "user_002": {
-        "name": "Maria Souza",
-        "email": "maria.souza@email.com",
-        "account_status": "suspended",
-        "kyc_verified": False,
-        "plan": "InfinitePay Basic",
-        "since": "2022-08-20",
-        "transfer_limit_daily": 1000.00,
-        "transfer_limit_remaining": 0.00,
-        "failed_login_attempts": 6,
-        "transactions": [],
-    },
-    "user_003": {
-        "name": "João Silva",
-        "email": "joao.silva@email.com",
-        "account_status": "pending_kyc",
-        "kyc_verified": False,
-        "plan": "InfinitePay Basic",
-        "since": "2026-03-01",
-        "transfer_limit_daily": 500.00,
-        "transfer_limit_remaining": 500.00,
-        "failed_login_attempts": 0,
-        "transactions": [],
-    },
-    "user_004": {
-        "name": "Ana Lima",
-        "email": "ana.lima@empresa.com",
-        "account_status": "active",
-        "kyc_verified": True,
-        "plan": "InfinitePay Enterprise",
-        "since": "2021-11-05",
-        "transfer_limit_daily": 50000.00,
-        "transfer_limit_remaining": 0.00,
-        "failed_login_attempts": 0,
-        "transactions": [
-            {
-                "id": "txn_010",
-                "type": "pix_out",
-                "amount": 50000.00,
-                "date": "2026-04-13",
-                "status": "completed",
-                "description": "Pagamento mensal fornecedores",
-            },
-        ],
-    },
-    "user_005": {
-        "name": "Pedro Costa",
-        "email": "pedro.costa@email.com",
-        "account_status": "active",
-        "kyc_verified": True,
-        "plan": "InfinitePay Pro",
-        "since": "2024-01-15",
-        "transfer_limit_daily": 5000.00,
-        "transfer_limit_remaining": 4800.00,
-        "failed_login_attempts": 2,
-        "transactions": [
-            {
-                "id": "txn_020",
-                "type": "card_payment_received",
-                "amount": 199.90,
-                "date": "2026-04-12",
-                "status": "failed",
-                "description": "Tentativa de venda crédito - falhou",
-            },
-        ],
-    },
-}
+from typing import Optional
+
+from app.database.db import SessionLocal
+from app.database.models import User
+
+
+def _resolve_user(db, user_id: str) -> Optional[User]:
+    """Accepts a numeric DB id ('42') or a legacy slug ('client789')."""
+    if user_id.isdigit():
+        return db.query(User).filter(User.id == int(user_id)).one_or_none()
+    return db.query(User).filter(User.legacy_id == user_id).one_or_none()
 
 
 def get_user(user_id: str) -> Optional[dict]:
-    """Returns a copy of user data or None if not found."""
-    user = MOCK_USERS.get(user_id)
-    return deepcopy(user) if user else None
+    """Returns a flat dict mirroring the old in-memory shape, or None."""
+    with SessionLocal() as db:
+        user = _resolve_user(db, user_id)
+        if user is None:
+            return None
+        return {
+            "name": user.name,
+            "email": user.email,
+            "account_status": user.account_status,
+            "kyc_verified": user.kyc_verified,
+            "plan": user.plan,
+            "since": user.member_since,
+            "transfer_limit_daily": user.transfer_limit_daily,
+            "transfer_limit_remaining": user.transfer_limit_remaining,
+            "failed_login_attempts": user.failed_login_attempts,
+            "transactions": [
+                {
+                    "id": t.id, "type": t.type, "amount": t.amount,
+                    "date": t.date, "status": t.status, "description": t.description,
+                }
+                for t in user.transactions
+            ],
+        }
 
 
 def get_account_status(user_id: str) -> dict:
-    """
-    Returns account status enriched with diagnostic hints for the support agent.
-
-    The `diagnostic_hints` list contains human-readable strings that the
-    Support Agent uses to explain the root cause of issues to the customer.
-    Hints are generated based on account state (suspension, KYC status,
-    failed login count, remaining transfer limit).
-
-    Args:
-        user_id: The customer's unique identifier.
-
-    Returns:
-        Dict with account fields and a `diagnostic_hints` list, or
-        {"found": False, "user_id": user_id} if the user does not exist.
-    """
+    """Returns diagnostic-enriched account status for the Support Agent."""
     user = get_user(user_id)
     if not user:
-        return {
-            "found": False,
-            "user_id": user_id,
-        }
+        return {"found": False, "user_id": user_id}
 
-    hints = []
+    hints: list[str] = []
     status = user["account_status"]
 
     if status == "suspended":
@@ -171,7 +73,7 @@ def get_account_status(user_id: str) -> dict:
         )
     if user["transfer_limit_remaining"] == 0:
         hints.append("Daily transfer limit exhausted — will reset at midnight.")
-    if user["transfer_limit_remaining"] < user["transfer_limit_daily"] * 0.1:
+    if 0 < user["transfer_limit_remaining"] < user["transfer_limit_daily"] * 0.1:
         hints.append(
             f"Transfer limit nearly exhausted: R$ {user['transfer_limit_remaining']:.2f} remaining."
         )
@@ -192,7 +94,6 @@ def get_account_status(user_id: str) -> dict:
 
 
 def get_recent_transactions(user_id: str, limit: int = 5) -> dict:
-    """Returns the most recent transactions for a user."""
     user = get_user(user_id)
     if not user:
         return {"found": False, "user_id": user_id, "transactions": []}

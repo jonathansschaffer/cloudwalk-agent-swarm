@@ -104,7 +104,12 @@ def run(message: str, user_id: str, language: str = "en") -> dict:
         {"response": str, "escalate": bool, "ticket_id": str | None}
     """
     agent = _get_agent()
-    full_input = f"Customer ID: {user_id}\nCustomer message: {message}"
+    lang_name = {"pt": "Portuguese (Brazilian)", "en": "English"}.get(language, "English")
+    full_input = (
+        f"Customer ID: {user_id}\n"
+        f"[Respond strictly in {lang_name}.]\n"
+        f"Customer message: {message}"
+    )
 
     try:
         result = _invoke_with_retry(agent, {"messages": [HumanMessage(content=full_input)]})

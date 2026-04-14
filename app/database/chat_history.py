@@ -1,27 +1,28 @@
 """
-In-memory chat history store.
+Chat history store (DB-backed).
 
-Stores conversation turns per user_id so the frontend can reload previous
-messages on page refresh or when switching users. Each user's history is
-isolated — no user can access another's conversation data.
-
-Limitations (acceptable for demo):
-  - History is lost when the server restarts (no persistence layer).
-  - Memory bounded by MAX_HISTORY_PER_USER per user (oldest turns dropped).
-
-In production this would be backed by Redis or a database with proper
-authentication ensuring users can only read their own history.
+Every successful /chat turn is persisted here. The frontend reloads the
+authenticated user's history on every page load. Old in-memory semantics
+are preserved on the write side — the caller passes a user_id (DB id as
+string, or legacy slug) and we resolve it to the `users.id` FK.
 """
 
-import threading
-from collections import defaultdict
-from datetime import datetime, timezone
+from __future__ import annotations
+
 from typing import Optional
 
-MAX_HISTORY_PER_USER = 100  # maximum turns stored per user
+from app.database.db import SessionLocal
+from app.database.models import ChatMessage, User
 
-_store: dict[str, list[dict]] = defaultdict(list)
-_lock = threading.Lock()
+MAX_HISTORY_PER_USER = 100  # maximum turns returned per user
+
+
+def _resolve_user_id(db, user_id_str: str) -> Optional[int]:
+    if user_id_str.isdigit():
+        exists = db.query(User.id).filter(User.id == int(user_id_str)).scalar()
+        return int(exists) if exists is not None else None
+    user = db.query(User).filter(User.legacy_id == user_id_str).one_or_none()
+    return user.id if user else None
 
 
 def append_turn(
@@ -34,51 +35,54 @@ def append_turn(
     escalated: bool = False,
     language: str = "en",
 ) -> None:
-    """
-    Appends a completed conversation turn to the user's history.
-
-    Args:
-        user_id:      The user's unique identifier.
-        user_message: The message the user sent.
-        bot_response: The agent's reply.
-        agent_used:   Which agent produced the response.
-        intent:       Classified intent (e.g. KNOWLEDGE_PRODUCT).
-        ticket_id:    Support ticket ID if one was created.
-        escalated:    Whether the conversation was escalated to a human.
-        language:     Detected language ("pt" or "en").
-    """
-    turn = {
-        "user": user_message,
-        "bot": bot_response,
-        "agent_used": agent_used,
-        "intent": intent,
-        "ticket_id": ticket_id,
-        "escalated": escalated,
-        "language": language,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    with _lock:
-        history = _store[user_id]
-        history.append(turn)
-        if len(history) > MAX_HISTORY_PER_USER:
-            history.pop(0)  # drop the oldest turn
+    with SessionLocal() as db:
+        resolved_id = _resolve_user_id(db, user_id)
+        if resolved_id is None:
+            return  # Silently skip history for unknown users (e.g. Telegram unlinked).
+        db.add(ChatMessage(
+            user_id=resolved_id,
+            user_message=user_message,
+            bot_response=bot_response,
+            agent_used=agent_used,
+            intent=intent,
+            ticket_id=ticket_id,
+            escalated=escalated,
+            language=language,
+        ))
+        db.commit()
 
 
 def get_history(user_id: str) -> list[dict]:
-    """
-    Returns a copy of the conversation history for a user.
-
-    Args:
-        user_id: The user's unique identifier.
-
-    Returns:
-        List of turn dicts, oldest first. Empty list if no history.
-    """
-    with _lock:
-        return list(_store.get(user_id, []))
+    with SessionLocal() as db:
+        resolved_id = _resolve_user_id(db, user_id)
+        if resolved_id is None:
+            return []
+        rows = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.user_id == resolved_id)
+            .order_by(ChatMessage.created_at.asc())
+            .limit(MAX_HISTORY_PER_USER)
+            .all()
+        )
+        return [
+            {
+                "user": r.user_message,
+                "bot": r.bot_response,
+                "agent_used": r.agent_used,
+                "intent": r.intent,
+                "ticket_id": r.ticket_id,
+                "escalated": r.escalated,
+                "language": r.language,
+                "timestamp": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
 
 
 def clear_history(user_id: str) -> None:
-    """Clears all history for a user (useful for testing)."""
-    with _lock:
-        _store.pop(user_id, None)
+    with SessionLocal() as db:
+        resolved_id = _resolve_user_id(db, user_id)
+        if resolved_id is None:
+            return
+        db.query(ChatMessage).filter(ChatMessage.user_id == resolved_id).delete()
+        db.commit()

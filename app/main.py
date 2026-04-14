@@ -16,8 +16,10 @@ Security middleware stack (outermost → innermost):
 """
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from threading import Lock
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,6 +33,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.utils.logger import setup_logging
 from app.config import validate_config, TELEGRAM_BOT_TOKEN, ALLOWED_ORIGINS
 from app.api.routes import router, limiter
+from app.auth.routes import router as auth_router
+from app.database.db import SessionLocal, init_db
+from app.database.seed import seed_mock_users
 from app.rag.pipeline import build_knowledge_base
 
 # Configure logging before anything else
@@ -44,6 +49,58 @@ _STATIC_DIR = Path(__file__).parent / "static"
 # ------------------------------------------------------------------ #
 # Security Headers Middleware                                          #
 # ------------------------------------------------------------------ #
+
+class MetricsMiddleware(BaseHTTPMiddleware):
+    """Times every HTTP request, emits a structured log line, and feeds counters."""
+
+    async def dispatch(self, request: Request, call_next):
+        start = time.monotonic()
+        try:
+            response = await call_next(request)
+            status = response.status_code
+        except Exception:
+            METRICS.record(request.method, request.url.path, 500, time.monotonic() - start)
+            raise
+        latency_ms = (time.monotonic() - start) * 1000.0
+        METRICS.record(request.method, request.url.path, status, latency_ms / 1000.0)
+        if not request.url.path.startswith(("/static", "/docs", "/openapi", "/favicon")):
+            logger.info(
+                "http %s %s status=%d latency_ms=%.1f",
+                request.method, request.url.path, status, latency_ms,
+            )
+        return response
+
+
+class _Metrics:
+    """Thread-safe in-memory counters and latency aggregates per (method, path, status)."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._counters: dict[tuple[str, str, int], int] = {}
+        self._latency_sum: dict[tuple[str, str, int], float] = {}
+
+    def record(self, method: str, path: str, status: int, latency_seconds: float) -> None:
+        key = (method, path, status)
+        with self._lock:
+            self._counters[key] = self._counters.get(key, 0) + 1
+            self._latency_sum[key] = self._latency_sum.get(key, 0.0) + latency_seconds
+
+    def snapshot(self) -> list[dict]:
+        with self._lock:
+            return [
+                {
+                    "method": k[0],
+                    "path": k[1],
+                    "status": k[2],
+                    "count": v,
+                    "avg_latency_ms": (self._latency_sum[k] / v) * 1000.0,
+                }
+                for k, v in self._counters.items()
+            ]
+
+
+METRICS = _Metrics()
+
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Adds security headers to every HTTP response."""
@@ -80,6 +137,11 @@ async def lifespan(app: FastAPI):
 
     # Validate required configuration (raises on missing ANTHROPIC_API_KEY)
     validate_config()
+
+    # Initialize database schema + seed mock users on first run
+    init_db()
+    with SessionLocal() as db:
+        seed_mock_users(db)
 
     # Build vector knowledge base if not already populated
     logger.info("Checking knowledge base...")
@@ -149,13 +211,16 @@ app.add_middleware(SlowAPIMiddleware)
 # Security headers on every response
 app.add_middleware(SecurityHeadersMiddleware)
 
+# Request timing + counters (outermost so it sees the full latency)
+app.add_middleware(MetricsMiddleware)
+
 # CORS — configured via ALLOWED_ORIGINS env variable (defaults to localhost only)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -178,3 +243,14 @@ if _STATIC_DIR.exists():
 # ------------------------------------------------------------------ #
 
 app.include_router(router, tags=["InfinitePay Assistant"])
+app.include_router(auth_router)
+
+
+# ------------------------------------------------------------------ #
+# Metrics endpoint                                                     #
+# ------------------------------------------------------------------ #
+
+@app.get("/metrics", include_in_schema=False)
+def metrics() -> JSONResponse:
+    """Returns in-memory request counters and average latencies per route."""
+    return JSONResponse({"requests": METRICS.snapshot()})

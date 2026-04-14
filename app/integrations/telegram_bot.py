@@ -38,6 +38,9 @@ from telegram.ext import (
 )
 
 from app.agents.router_agent import process_message
+from app.database.db import SessionLocal
+from app.database.models import TelegramLink, TelegramLinkCode, User
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -223,13 +226,92 @@ _AGENT_LABELS = {
     "guardrails": "🛡️ Guardrails",
 }
 
+_LANGUAGE_LABELS = {"pt": "🇧🇷 PT", "en": "🇺🇸 EN"}
+
+
+def _normalize_blank_lines(text: str) -> str:
+    """Collapse 3+ consecutive newlines into exactly 2 (one blank line)."""
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+# ---------------------------------------------------------------------------
+# Telegram ↔ App user linking
+# ---------------------------------------------------------------------------
+
+def _resolve_linked_user(telegram_user_id: int) -> int | None:
+    """Returns the App user_id linked to this Telegram account, or None."""
+    with SessionLocal() as db:
+        link = db.query(TelegramLink).filter(
+            TelegramLink.telegram_user_id == str(telegram_user_id)
+        ).one_or_none()
+        return link.user_id if link else None
+
+
+def _consume_link_code(code: str, telegram_user_id: int) -> tuple[bool, str]:
+    """
+    Validates and consumes a one-shot linking code.
+
+    Returns (success, human_message).
+    """
+    code = code.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{6}", code):
+        return False, "Código inválido. O formato esperado é 6 caracteres (A-Z, 0-9)."
+
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        row = db.query(TelegramLinkCode).filter(TelegramLinkCode.code == code).one_or_none()
+        if row is None:
+            return False, "Código não encontrado. Gere um novo no app web."
+        if row.used_at is not None:
+            return False, "Este código já foi usado."
+        if row.expires_at < now:
+            return False, "Este código expirou. Gere um novo no app web."
+
+        # Replace any existing link for this Telegram account
+        existing = db.query(TelegramLink).filter(
+            TelegramLink.telegram_user_id == str(telegram_user_id)
+        ).one_or_none()
+        if existing:
+            db.delete(existing)
+            db.flush()
+
+        # Replace any existing link this user might already have to a different TG account
+        prev = db.query(TelegramLink).filter(TelegramLink.user_id == row.user_id).one_or_none()
+        if prev:
+            db.delete(prev)
+            db.flush()
+
+        db.add(TelegramLink(
+            telegram_user_id=str(telegram_user_id),
+            user_id=row.user_id,
+            linked_at=now,
+        ))
+        row.used_at = now
+        user = db.query(User).filter(User.id == row.user_id).one()
+        db.commit()
+        return True, f"✅ Conta vinculada com sucesso a <b>{html.escape(user.name)}</b>."
+
 # Use HTML parse mode — more reliable than Markdown for messages with emojis
 _WELCOME_MESSAGE = textwrap.dedent("""
     👋 Olá! Sou o assistente da <b>InfinitePay</b>.
 
-    Pergunte sobre produtos, taxas, sua conta ou qualquer coisa — em português ou inglês.
+    Para conversar comigo aqui no Telegram, você precisa vincular sua conta InfinitePay primeiro:
 
-    Use /help para ver exemplos.
+    1️⃣ Acesse o app web e faça login
+    2️⃣ Vá em "Vincular Telegram" e gere um código de 6 caracteres
+    3️⃣ Envie aqui: <code>/link SEU_CODIGO</code>
+
+    Depois disso, é só perguntar — em português ou inglês.
+    Use /help para exemplos.
+""").strip()
+
+_NOT_LINKED_MESSAGE = textwrap.dedent("""
+    🔒 Sua conta do Telegram ainda não está vinculada a uma conta InfinitePay.
+
+    Para vincular:
+    1️⃣ Acesse o app web e faça login
+    2️⃣ Em "Vincular Telegram", gere um código
+    3️⃣ Envie aqui: <code>/link SEU_CODIGO</code>
 """).strip()
 
 _HELP_MESSAGE = textwrap.dedent("""
@@ -324,6 +406,22 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _safe_reply(update, _HELP_MESSAGE, parse_mode=ParseMode.HTML, msg_id="help")
 
 
+async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles /link <code> — pairs this Telegram account to an InfinitePay user."""
+    args = context.args or []
+    if not args:
+        await _safe_reply(
+            update,
+            "Uso: <code>/link SEU_CODIGO</code>\n\nGere o código no app web em \"Vincular Telegram\".",
+            parse_mode=ParseMode.HTML,
+            msg_id="link",
+        )
+        return
+
+    success, message = _consume_link_code(args[0], update.effective_user.id)
+    await _safe_reply(update, message, parse_mode=ParseMode.HTML, msg_id="link")
+
+
 # ---------------------------------------------------------------------------
 # Message handler
 # ---------------------------------------------------------------------------
@@ -338,10 +436,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """
     user_text = update.message.text
     telegram_user_id = update.effective_user.id
-    user_id = f"tg_{telegram_user_id}"
     msg_id = uuid.uuid4().hex[:8]  # short unique ID for log correlation
     start_ts = time.monotonic()
 
+    linked_user_id = _resolve_linked_user(telegram_user_id)
+    if linked_user_id is None:
+        logger.info("[%s] REJECTED unlinked telegram_user=%s", msg_id, telegram_user_id)
+        await _safe_reply(update, _NOT_LINKED_MESSAGE, parse_mode=ParseMode.HTML, msg_id=msg_id)
+        return
+
+    user_id = str(linked_user_id)
     logger.info("[%s] RECEIVED user=%s message='%s'", msg_id, user_id, user_text[:80])
 
     # Show "typing..." indicator and keep refreshing it every 4s while processing
@@ -385,28 +489,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     agent_used = state.get("agent_used", "")
     ticket_id = state.get("ticket_id")
     escalated = state.get("escalated", False)
+    language = state.get("language", "en")
 
-    # Convert Markdown to Telegram HTML so bold, headers, tables render properly
-    html_body = _md_to_html(response_text)
+    # Convert Markdown to Telegram HTML so bold, headers, tables render properly,
+    # then collapse runs of blank lines so the body stays tight.
+    html_body = _normalize_blank_lines(_md_to_html(response_text))
 
     agent_label = _AGENT_LABELS.get(agent_used, html.escape(agent_used))
-    footer = f"\n\n— {agent_label}"
+    lang_label = _LANGUAGE_LABELS.get(language, language.upper())
+    footer_lines = [f"— {agent_label} · {lang_label}"]
 
     if ticket_id:
-        footer += f"\n🎫 Ticket: {html.escape(str(ticket_id))}"
+        footer_lines.append(f"🎫 Ticket: {html.escape(str(ticket_id))}")
 
     if escalated and agent_used != "escalation_agent":
-        footer += "\n\n⚠️ Esta conversa foi encaminhada para nossa equipe humana."
+        footer_lines.append("⚠️ Esta conversa foi encaminhada para nossa equipe humana.")
 
-    # Roadmap item: if the agent handled a support case, suggest the web UI
-    # for actions that require selecting a user account (history, detailed support)
-    if agent_used == "support_agent" and not escalated:
-        footer += (
-            "\n\n💡 Para uma experiência completa com histórico e seleção de conta, "
-            "acesse o InfinitePay Assistant em <a href='http://127.0.0.1:8000'>InfinitePay Assistant</a>"
-        )
-
-    full_message = html_body + footer
+    full_message = html_body + "\n\n" + "\n".join(footer_lines)
 
     # Telegram has a 4096 character limit per message
     if len(full_message) > 4000:
@@ -449,6 +548,7 @@ def build_application(token: str) -> Application:
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("link", link_command))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
