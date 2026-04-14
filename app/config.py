@@ -29,6 +29,17 @@ TELEGRAM_POLLING_ENABLED: bool = os.getenv(
     "TELEGRAM_POLLING_ENABLED", "true"
 ).lower() in {"1", "true", "yes"}
 
+# Telegram webhook URL — when set, the bot uses webhook mode instead of long
+# polling. Set this to your Railway app URL (e.g. "https://my-app.railway.app").
+# The bot will register the webhook at <TELEGRAM_WEBHOOK_URL>/telegram/webhook.
+# Leave empty for local dev (falls back to long polling).
+TELEGRAM_WEBHOOK_URL: str = os.getenv("TELEGRAM_WEBHOOK_URL", "").rstrip("/")
+
+# Optional secret token to authenticate incoming webhook requests from Telegram.
+# Set any random 256-char alphanumeric string; Telegram will include it as the
+# X-Telegram-Bot-Api-Secret-Token header. Leave empty to skip validation.
+TELEGRAM_WEBHOOK_SECRET: str = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+
 # ---------------------------------------------------------------------------
 # Storage Paths
 # ---------------------------------------------------------------------------

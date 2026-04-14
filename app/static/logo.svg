@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="InfinitePay Assistant">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00c853"/>
+      <stop offset="100%" stop-color="#00897b"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect width="100" height="100" rx="22" fill="url(#bg)"/>
+  <!-- Lightning bolt: fast payments, instant transfers -->
+  <path d="M57,8 L35,54 L50,54 L42,92 L65,46 L50,46 Z" fill="#071a0f"/>
+</svg>

@@ -23,14 +23,17 @@ and you also answer general knowledge questions.
 
 ## Your Tools
 1. **infinitepay_knowledge_base**: Use for ANY question about InfinitePay products, services, \
-fees, features, or how things work. Always try this tool FIRST for InfinitePay topics.
-2. **web_search**: Use for general knowledge questions NOT related to InfinitePay \
+fees, features, or how things work. ALWAYS call this tool first for InfinitePay topics.
+2. **web_search**: Use ONLY for questions that are clearly NOT about InfinitePay \
 (e.g., sports results, current news, weather, general facts).
 
-## Rules
-- ALWAYS use `infinitepay_knowledge_base` for InfinitePay questions before attempting to answer from memory.
-- ALWAYS use `web_search` for general questions (e.g., "Quando foi o último jogo do Palmeiras?").
-- If the knowledge base returns no relevant results, say so honestly and suggest contacting support.
+## Strict Rules
+- **InfinitePay questions → infinitepay_knowledge_base ONLY.** \
+  NEVER call `web_search` for questions about InfinitePay products, fees, or services, \
+  even if the knowledge base returns sparse results. If the knowledge base has no results, \
+  say so and direct the user to suporte@infinitepay.io.
+- **General knowledge questions → web_search ONLY.** \
+  Do NOT use `infinitepay_knowledge_base` for topics unrelated to InfinitePay.
 - **CRITICAL**: Always respond in the EXACT SAME LANGUAGE as the user's message. \
   If the user writes in Portuguese, respond entirely in Portuguese. \
   If the user writes in English, respond entirely in English. Never mix languages.
@@ -99,7 +102,7 @@ def _invoke_with_retry(agent, messages: dict) -> dict:
     return agent.invoke(messages)
 
 
-def run(message: str, language: str = "en") -> str:
+def run(message: str, language: str = "en") -> dict:
     """
     Runs the Knowledge Agent on a user message.
 
@@ -112,8 +115,12 @@ def run(message: str, language: str = "en") -> str:
         language: Detected language ("pt" or "en") for error messages.
 
     Returns:
-        The agent's answer as a string.
+        {"response": str, "tools_used": list[str]}
+        tools_used lists tool names in call order, e.g.
+        ["infinitepay_knowledge_base"] or ["web_search"].
     """
+    from langchain_core.messages import ToolMessage
+
     agent = _get_agent()
     today = date.today().strftime("%A, %B %d, %Y")
     lang_name = {"pt": "Portuguese (Brazilian)", "en": "English"}.get(language, "English")
@@ -124,9 +131,20 @@ def run(message: str, language: str = "en") -> str:
     )
     try:
         result = _invoke_with_retry(agent, {"messages": [HumanMessage(content=dated_message)]})
+        messages = result["messages"]
+        # Extract which tools were called (in order)
+        tools_used = [
+            msg.name for msg in messages
+            if isinstance(msg, ToolMessage) and msg.name
+        ]
+        if tools_used:
+            logger.info("Knowledge Agent tools called: %s", tools_used)
         # The last message in the list is the final AI response
-        last_message = result["messages"][-1]
-        return last_message.content
+        last_message = messages[-1]
+        return {"response": last_message.content, "tools_used": tools_used}
     except Exception as exc:
         logger.error("Knowledge Agent error after retries: %s", exc)
-        return _ERROR_MESSAGES.get(language, _ERROR_MESSAGES["en"])
+        return {
+            "response": _ERROR_MESSAGES.get(language, _ERROR_MESSAGES["en"]),
+            "tools_used": [],
+        }

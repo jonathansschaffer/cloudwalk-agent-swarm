@@ -78,6 +78,7 @@ def chat(
             ticket_id=state.get("ticket_id"),
             escalated=state.get("escalated", False),
             language=state["language"],
+            tools_used=state.get("tools_used", []),
         )
     except HTTPException:
         raise

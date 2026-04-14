@@ -36,6 +36,7 @@ class AgentState(TypedDict):
     escalated: bool
     blocked: bool
     investigation_summary: str
+    tools_used: list  # tools called by the knowledge agent, in order
 
 
 # ---------------------------------------------------------------------------
@@ -130,11 +131,12 @@ def router_node(state: AgentState) -> AgentState:
 
 def knowledge_node(state: AgentState) -> AgentState:
     """Routes to the Knowledge Agent (RAG or web search)."""
-    response = knowledge_agent.run(state["message"], state["language"])
+    result = knowledge_agent.run(state["message"], state["language"])
     return {
         **state,
-        "response": guardrails.sanitize_output(response),
+        "response": guardrails.sanitize_output(result["response"]),
         "agent_used": "knowledge_agent",
+        "tools_used": result["tools_used"],
     }
 
 
@@ -300,6 +302,7 @@ def process_message(message: str, user_id: str) -> AgentState:
         "escalated": False,
         "blocked": False,
         "investigation_summary": "",
+        "tools_used": [],
     }
 
     graph = _get_graph()

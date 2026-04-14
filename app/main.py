@@ -35,6 +35,8 @@ from app.config import (
     validate_config,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_POLLING_ENABLED,
+    TELEGRAM_WEBHOOK_URL,
+    TELEGRAM_WEBHOOK_SECRET,
     ALLOWED_ORIGINS,
 )
 from app.api.routes import router, limiter
@@ -156,27 +158,66 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Knowledge base is empty — RAG responses may be limited.")
 
-    # Start Telegram bot (optional — only if token is configured AND polling is
-    # enabled; when running locally against a bot that Railway is already polling,
-    # set TELEGRAM_POLLING_ENABLED=false to avoid NetworkError/Conflict noise).
+    # ------------------------------------------------------------------ #
+    # Telegram bot — webhook mode (prod) or long-polling (local dev)     #
+    # ------------------------------------------------------------------ #
+    # Webhook mode: set TELEGRAM_WEBHOOK_URL=https://your-app.railway.app
+    #   → bot registers POST /telegram/webhook with Telegram and returns
+    #     immediately; no blocking, healthcheck always succeeds.
+    # Polling mode: leave TELEGRAM_WEBHOOK_URL empty and ensure only ONE
+    #   instance is polling (set TELEGRAM_POLLING_ENABLED=false on others).
     tg_app = None
-    if TELEGRAM_BOT_TOKEN and not TELEGRAM_POLLING_ENABLED:
-        logger.info(
-            "TELEGRAM_BOT_TOKEN is set but TELEGRAM_POLLING_ENABLED=false — bot disabled."
-        )
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_POLLING_ENABLED:
+    _tg_webhook_mode = False
+
+    if not TELEGRAM_BOT_TOKEN:
+        logger.info("TELEGRAM_BOT_TOKEN not set — Telegram bot disabled.")
+    elif TELEGRAM_WEBHOOK_URL:
+        # ── Webhook mode ────────────────────────────────────────────────
         try:
             from app.integrations.telegram_bot import build_application
             tg_app = build_application(TELEGRAM_BOT_TOKEN)
             await tg_app.initialize()
-            await tg_app.start()
-            await tg_app.updater.start_polling()
-            logger.info("Telegram bot started (long polling).")
+            webhook_endpoint = f"{TELEGRAM_WEBHOOK_URL}/telegram/webhook"
+            secret = TELEGRAM_WEBHOOK_SECRET or None
+            await tg_app.bot.set_webhook(
+                url=webhook_endpoint,
+                secret_token=secret,
+                allowed_updates=["message", "callback_query"],
+            )
+            _tg_webhook_mode = True
+            logger.info("Telegram bot registered webhook: %s", webhook_endpoint)
         except Exception as exc:
-            logger.error("Failed to start Telegram bot: %s", exc)
+            logger.error("Failed to register Telegram webhook: %s", exc)
+            tg_app = None
+    elif TELEGRAM_POLLING_ENABLED:
+        # ── Long-polling mode (background task — non-blocking) ──────────
+        try:
+            import asyncio as _asyncio
+            from app.integrations.telegram_bot import build_application
+            tg_app = build_application(TELEGRAM_BOT_TOKEN)
+
+            async def _run_polling():
+                try:
+                    await tg_app.initialize()
+                    await tg_app.start()
+                    await tg_app.updater.start_polling()
+                    logger.info("Telegram bot started (long polling).")
+                except Exception as _exc:
+                    logger.error("Telegram polling error: %s", _exc)
+
+            _asyncio.create_task(_run_polling())
+        except Exception as exc:
+            logger.error("Failed to schedule Telegram polling task: %s", exc)
             tg_app = None
     else:
-        logger.info("TELEGRAM_BOT_TOKEN not set — Telegram bot disabled.")
+        logger.info(
+            "TELEGRAM_BOT_TOKEN is set but TELEGRAM_POLLING_ENABLED=false "
+            "and TELEGRAM_WEBHOOK_URL is empty — bot disabled."
+        )
+
+    # Store reference on app.state so the webhook route can reach it.
+    app.state.tg_app = tg_app
+    app.state.tg_webhook_mode = _tg_webhook_mode
 
     logger.info("=== Agent Swarm Ready ===")
 
@@ -186,9 +227,13 @@ async def lifespan(app: FastAPI):
 
     if tg_app is not None:
         try:
-            await tg_app.updater.stop()
-            await tg_app.stop()
-            await tg_app.shutdown()
+            if _tg_webhook_mode:
+                await tg_app.bot.delete_webhook()
+                await tg_app.shutdown()
+            else:
+                await tg_app.updater.stop()
+                await tg_app.stop()
+                await tg_app.shutdown()
             logger.info("Telegram bot stopped.")
         except Exception as exc:
             logger.error("Error stopping Telegram bot: %s", exc)
@@ -255,6 +300,43 @@ if _STATIC_DIR.exists():
 
 app.include_router(router, tags=["InfinitePay Assistant"])
 app.include_router(auth_router)
+
+
+# ------------------------------------------------------------------ #
+# Telegram webhook endpoint                                            #
+# ------------------------------------------------------------------ #
+
+@app.post("/telegram/webhook", include_in_schema=False)
+async def telegram_webhook(request: Request) -> JSONResponse:
+    """
+    Receives Telegram updates when running in webhook mode.
+
+    Telegram sends a POST request with the update JSON payload to this URL.
+    If TELEGRAM_WEBHOOK_SECRET is configured, the request is authenticated
+    via the X-Telegram-Bot-Api-Secret-Token header.
+    """
+    tg = getattr(app.state, "tg_app", None)
+    if tg is None:
+        return JSONResponse({"ok": False, "error": "Bot not initialised"}, status_code=503)
+
+    # Validate optional secret token
+    if TELEGRAM_WEBHOOK_SECRET:
+        incoming_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if incoming_secret != TELEGRAM_WEBHOOK_SECRET:
+            logger.warning("Telegram webhook: invalid secret token from %s", request.client)
+            return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+    try:
+        data = await request.json()
+        from telegram import Update
+        update = Update.de_json(data, tg.bot)
+        await tg.process_update(update)
+    except Exception as exc:
+        logger.error("Telegram webhook processing error: %s", exc, exc_info=True)
+        # Still return 200 so Telegram does not retry endlessly
+        return JSONResponse({"ok": False, "error": str(exc)})
+
+    return JSONResponse({"ok": True})
 
 
 # ------------------------------------------------------------------ #

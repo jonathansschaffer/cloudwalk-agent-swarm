@@ -4,12 +4,16 @@ Ticket service (DB-backed).
 Creates and lists support tickets. Each ticket belongs to exactly one user —
 the Support Agent passes the authenticated user's DB id (or legacy slug) so
 tickets cannot be created for someone else.
+
+Deduplication: if the user already has an open ticket created within the last
+24 hours, `create_ticket` returns that existing ticket instead of opening a
+new one. This prevents spam-escalation from flooding the queue.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.database.db import SessionLocal
@@ -22,6 +26,9 @@ _RESOLUTION_MAP = {
     "high": "2-4 hours",
 }
 
+# How long an open ticket blocks creation of a new one for the same user.
+_DEDUP_WINDOW_HOURS = 24
+
 
 def _resolve_user_id(db, user_id_str: str) -> Optional[int]:
     if user_id_str.isdigit():
@@ -31,7 +38,35 @@ def _resolve_user_id(db, user_id_str: str) -> Optional[int]:
     return user.id if user else None
 
 
+def find_open_ticket(user_id: str) -> Optional[dict]:
+    """
+    Returns the most recent open ticket for *user_id* created within the last
+    `_DEDUP_WINDOW_HOURS` hours, or None if no such ticket exists.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=_DEDUP_WINDOW_HOURS)
+    with SessionLocal() as db:
+        resolved_id = _resolve_user_id(db, user_id)
+        if resolved_id is None:
+            return None
+        ticket = (
+            db.query(Ticket)
+            .filter(
+                Ticket.user_id == resolved_id,
+                Ticket.status == "open",
+                Ticket.created_at >= cutoff,
+            )
+            .order_by(Ticket.created_at.desc())
+            .first()
+        )
+        return _ticket_to_dict(ticket) if ticket else None
+
+
 def create_ticket(user_id: str, issue: str, priority: str = "medium") -> dict:
+    """
+    Creates and persists a new support ticket, unless the user already has an
+    open ticket within the last `_DEDUP_WINDOW_HOURS` hours, in which case the
+    existing ticket is returned with ``"is_duplicate": True``.
+    """
     if priority not in _RESOLUTION_MAP:
         priority = "medium"
 
@@ -48,6 +83,23 @@ def create_ticket(user_id: str, issue: str, priority: str = "medium") -> dict:
                 "error": "User not found.",
             }
 
+        # --- Deduplication check -------------------------------------------
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=_DEDUP_WINDOW_HOURS)
+        existing = (
+            db.query(Ticket)
+            .filter(
+                Ticket.user_id == resolved_id,
+                Ticket.status == "open",
+                Ticket.created_at >= cutoff,
+            )
+            .order_by(Ticket.created_at.desc())
+            .first()
+        )
+        if existing:
+            result = _ticket_to_dict(existing)
+            result["is_duplicate"] = True
+            return result
+
         ticket_id = f"TKT-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
         ticket = Ticket(
             id=ticket_id,
@@ -60,7 +112,9 @@ def create_ticket(user_id: str, issue: str, priority: str = "medium") -> dict:
         db.add(ticket)
         db.commit()
         db.refresh(ticket)
-        return _ticket_to_dict(ticket)
+        result = _ticket_to_dict(ticket)
+        result["is_duplicate"] = False
+        return result
 
 
 def get_ticket(ticket_id: str) -> Optional[dict]:

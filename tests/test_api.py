@@ -4,17 +4,34 @@ Tests all example scenarios from the challenge README.
 
 Run with:
     pytest tests/test_api.py -v
+
+Auth: the tests use dependency_overrides to inject a mock user so no real
+JWT token is needed.  This isolates the agent logic from the auth layer.
 """
 
 import pytest
+from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 from app.main import app
+from app.auth.dependencies import get_current_user
+
+# Build a mock User that behaves like the seeded client789 account.
+_mock_user = MagicMock()
+_mock_user.id = 1
+_mock_user.legacy_id = "client789"
+_mock_user.name = "Carlos Andrade"
+_mock_user.email = "carlos.andrade@infinitepay.test"
+_mock_user.is_active = True
+
+# Override the auth dependency for all tests in this module.
+app.dependency_overrides[get_current_user] = lambda: _mock_user
 
 client = TestClient(app)
 
 
 def post_chat(message: str, user_id: str = "client789") -> dict:
-    response = client.post("/chat", json={"message": message, "user_id": user_id})
+    """Posts to /chat with the mocked auth user. user_id param kept for compat."""
+    response = client.post("/chat", json={"message": message})
     assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
     return response.json()
 
@@ -137,14 +154,29 @@ class TestRequestValidation:
     """Tests for API input validation."""
 
     def test_empty_message_rejected(self):
-        response = client.post("/chat", json={"message": "", "user_id": "client789"})
+        response = client.post("/chat", json={"message": ""})
         assert response.status_code == 422
 
-    def test_missing_user_id_rejected(self):
-        response = client.post("/chat", json={"message": "Hello"})
-        assert response.status_code == 422
+    def test_unauthenticated_request_rejected(self):
+        # Temporarily remove the override to test the real auth check
+        original = app.dependency_overrides.pop(get_current_user, None)
+        try:
+            c = TestClient(app)
+            response = c.post("/chat", json={"message": "Hello"})
+            assert response.status_code == 401
+        finally:
+            if original is not None:
+                app.dependency_overrides[get_current_user] = original
+            else:
+                app.dependency_overrides[get_current_user] = lambda: _mock_user
 
-    def test_unknown_user_handled_gracefully(self):
-        data = post_chat("I can't transfer money", user_id="nonexistent_user_xyz")
+    def test_message_handled_gracefully(self):
+        data = post_chat("I can't transfer money")
         assert data["agent_used"] in ("support_agent", "escalation_agent")
         assert len(data["response"]) > 0
+
+    def test_tools_used_present_in_response(self):
+        """Every /chat response includes the tools_used field."""
+        data = post_chat("What is InfinitePay?")
+        assert "tools_used" in data
+        assert isinstance(data["tools_used"], list)

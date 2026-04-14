@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -23,6 +23,13 @@ class ChatResponse(BaseModel):
         default=False, description="Whether the conversation was escalated to a human."
     )
     language: str = Field(description="Detected language of the user's message.")
+    tools_used: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Tools called by the knowledge agent, in order. "
+            "Values: 'infinitepay_knowledge_base' (RAG) or 'web_search'."
+        ),
+    )
 
 
 class HealthResponse(BaseModel):
