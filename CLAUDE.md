@@ -27,6 +27,11 @@ python scripts/test_agents.py                                 # manual end-to-en
 **Required env:** `ANTHROPIC_API_KEY`, `JWT_SECRET` (≥ 32 random bytes in production).
 **Optional env:** `TELEGRAM_BOT_TOKEN` (bot silently disabled if absent), `DATABASE_URL` (defaults to local SQLite at `data/app.db`; use `postgresql+psycopg2://…` in prod), `MOCK_USER_PASSWORD` (default `Test123!`), `SEED_MOCK_USERS` (default `true`), `ALLOWED_ORIGINS`, `CHROMA_DB_PATH`, `COLLECTION_NAME`.
 
+**Telegram modes** (mutually exclusive — pick one per environment):
+- **Webhook (Railway/prod):** set `TELEGRAM_WEBHOOK_URL=https://your-app.railway.app`. Bot registers `POST /telegram/webhook` with Telegram on startup and returns immediately — Railway healthcheck succeeds. Optionally set `TELEGRAM_WEBHOOK_SECRET` (any 256-char alphanumeric string) to authenticate incoming Telegram requests.
+- **Long-polling (local dev):** leave `TELEGRAM_WEBHOOK_URL` empty; set `TELEGRAM_POLLING_ENABLED=true` (default). Only ONE poller per token — set `TELEGRAM_POLLING_ENABLED=false` locally when Railway is already polling.
+- The lifespan is non-blocking in both modes: webhook startup is a fast HTTP call; polling is wrapped in `asyncio.create_task`.
+
 ## Architecture
 
 The system is a FastAPI app that routes each message through a **LangGraph `StateGraph`** to one of four specialized agents. Understanding the graph is the key to understanding the codebase.
