@@ -49,7 +49,7 @@ CHUNK_SIZE: int = 800
 CHUNK_OVERLAP: int = 100
 
 # Number of top-matching chunks to retrieve per query
-TOP_K_RETRIEVAL: int = 5
+TOP_K_RETRIEVAL: int = 7
 
 # Sentence-transformers model used for embedding (multilingual, runs locally)
 EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
@@ -110,6 +110,11 @@ INFINITEPAY_URLS: list[str] = [
     "https://www.infinitepay.io/emprestimo",
     "https://www.infinitepay.io/cartao",
     "https://www.infinitepay.io/rendimento",
+    # Additional pages added to cover JIM (AI assistant) and other products
+    "https://www.infinitepay.io/jim",
+    "https://www.infinitepay.io/seguro",
+    "https://www.infinitepay.io/antecipacao",
+    "https://www.infinitepay.io/sobre",
 ]
 
 

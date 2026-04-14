@@ -22,6 +22,8 @@ import html
 import logging
 import re
 import textwrap
+import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from telegram import Update
@@ -257,29 +259,55 @@ _HELP_MESSAGE = textwrap.dedent("""
 
 
 # ---------------------------------------------------------------------------
-# Helper: send message with Markdown fallback to plain text
+# Helper: send message with retry + HTML→plain fallback
 # ---------------------------------------------------------------------------
 
-async def _safe_reply(update: Update, text: str, parse_mode: str | None = None) -> None:
+async def _safe_reply(
+    update: Update,
+    text: str,
+    parse_mode: str | None = None,
+    msg_id: str = "",
+) -> bool:
     """
-    Sends a reply with the given parse mode, falling back to plain text on error.
+    Sends a reply with up to 3 attempts.
 
-    Args:
-        update:     Telegram update object.
-        text:       Message text to send.
-        parse_mode: ParseMode.HTML, ParseMode.MARKDOWN, or None (plain text).
+    Attempt 1: original parse_mode (HTML)
+    Attempt 2: plain text (strips all formatting — avoids invalid HTML rejections)
+    Attempt 3: plain text after 2s delay (transient network error recovery)
+
+    Returns True if message was delivered, False if all attempts failed.
     """
-    try:
-        await update.message.reply_text(text, parse_mode=parse_mode)
-    except TelegramError as exc:
-        if parse_mode is None:
-            logger.error("Failed to send plain text reply: %s", exc)
-            return
-        logger.warning("Failed to send with parse_mode=%s (%s). Retrying as plain text.", parse_mode, exc)
+    # Strip HTML tags for the plain-text fallback
+    plain_text = re.sub(r"<[^>]+>", "", text).strip()
+
+    attempts = [
+        (text, parse_mode),
+        (plain_text, None),
+    ]
+
+    for attempt_num, (msg, mode) in enumerate(attempts, start=1):
         try:
-            await update.message.reply_text(text)
-        except TelegramError as exc2:
-            logger.error("Failed to send plain text fallback reply: %s", exc2)
+            await update.message.reply_text(msg, parse_mode=mode)
+            if attempt_num > 1:
+                logger.info("[%s] Message delivered on attempt %d (plain text)", msg_id, attempt_num)
+            return True
+        except TelegramError as exc:
+            logger.warning(
+                "[%s] Send attempt %d/%d failed (parse_mode=%s): %s",
+                msg_id, attempt_num, len(attempts), mode, exc,
+            )
+            if attempt_num < len(attempts):
+                await asyncio.sleep(1.5)
+
+    # Final fallback: wait and retry plain text once more
+    try:
+        await asyncio.sleep(2)
+        await update.message.reply_text(plain_text)
+        logger.info("[%s] Message delivered on final retry", msg_id)
+        return True
+    except TelegramError as exc:
+        logger.error("[%s] All send attempts failed — message NOT delivered: %s", msg_id, exc)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -288,12 +316,12 @@ async def _safe_reply(update: Update, text: str, parse_mode: str | None = None) 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /start command — sends the welcome message."""
-    await _safe_reply(update, _WELCOME_MESSAGE, parse_mode=ParseMode.HTML)
+    await _safe_reply(update, _WELCOME_MESSAGE, parse_mode=ParseMode.HTML, msg_id="start")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /help command — sends usage examples."""
-    await _safe_reply(update, _HELP_MESSAGE, parse_mode=ParseMode.HTML)
+    await _safe_reply(update, _HELP_MESSAGE, parse_mode=ParseMode.HTML, msg_id="help")
 
 
 # ---------------------------------------------------------------------------
@@ -304,36 +332,53 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """
     Processes any text message through the Agent Swarm and replies.
 
-    The user_id is derived from the Telegram user ID to ensure each
-    user has a consistent session. A typing indicator is shown while
-    the agent processes the request (process_message is synchronous,
-    so it runs in a thread pool to avoid blocking the event loop).
+    Each message is assigned a correlation ID (msg_id) that appears in every
+    log line, making it easy to trace a single conversation turn end-to-end
+    (received → agent processing → reply sent / failed).
     """
     user_text = update.message.text
     telegram_user_id = update.effective_user.id
     user_id = f"tg_{telegram_user_id}"
+    msg_id = uuid.uuid4().hex[:8]  # short unique ID for log correlation
+    start_ts = time.monotonic()
 
-    logger.info("Telegram message from user=%s: %s", user_id, user_text[:80])
+    logger.info("[%s] RECEIVED user=%s message='%s'", msg_id, user_id, user_text[:80])
 
-    # Show "typing..." indicator
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id,
-        action="typing",
-    )
+    # Show "typing..." indicator and keep refreshing it every 4s while processing
+    async def _keep_typing():
+        while True:
+            try:
+                await context.bot.send_chat_action(
+                    chat_id=update.effective_chat.id, action="typing"
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(4)
+
+    typing_task = asyncio.create_task(_keep_typing())
 
     try:
-        # process_message is synchronous/blocking — run in the dedicated executor.
-        # Using max_workers=1 serializes calls so only one Anthropic API request
-        # is in flight at a time, preventing rate-limit errors under concurrent load.
         loop = asyncio.get_running_loop()
+        logger.info("[%s] Agent processing started", msg_id)
         state = await loop.run_in_executor(_AGENT_EXECUTOR, process_message, user_text, user_id)
+        elapsed = time.monotonic() - start_ts
+        logger.info(
+            "[%s] Agent processing completed in %.1fs | agent=%s intent=%s",
+            msg_id, elapsed, state.get("agent_used"), state.get("intent"),
+        )
     except Exception as exc:
-        logger.error("Agent Swarm error for Telegram user %s: %s", user_id, exc)
-        await update.message.reply_text(
+        typing_task.cancel()
+        elapsed = time.monotonic() - start_ts
+        logger.error("[%s] Agent error after %.1fs: %s", msg_id, elapsed, exc, exc_info=True)
+        await _safe_reply(
+            update,
             "⚠️ Ocorreu um erro ao processar sua mensagem. "
-            "Tente novamente ou acesse suporte@infinitepay.io"
+            "Tente novamente ou acesse suporte@infinitepay.io",
+            msg_id=msg_id,
         )
         return
+    finally:
+        typing_task.cancel()
 
     # Build the reply
     response_text = state.get("response", "")
@@ -353,13 +398,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if escalated and agent_used != "escalation_agent":
         footer += "\n\n⚠️ Esta conversa foi encaminhada para nossa equipe humana."
 
+    # Roadmap item: if the agent handled a support case, suggest the web UI
+    # for actions that require selecting a user account (history, detailed support)
+    if agent_used == "support_agent" and not escalated:
+        footer += (
+            "\n\n💡 Para uma experiência completa com histórico e seleção de conta, "
+            "acesse o InfinitePay Assistant em <a href='http://127.0.0.1:8000'>InfinitePay Assistant</a>"
+        )
+
     full_message = html_body + footer
 
     # Telegram has a 4096 character limit per message
     if len(full_message) > 4000:
         full_message = full_message[:3990] + "\n\n[mensagem truncada]"
 
-    await _safe_reply(update, full_message, parse_mode=ParseMode.HTML)
+    delivered = await _safe_reply(update, full_message, parse_mode=ParseMode.HTML, msg_id=msg_id)
+    if delivered:
+        logger.info("[%s] Reply delivered (total %.1fs)", msg_id, time.monotonic() - start_ts)
+    else:
+        logger.error("[%s] Reply NOT delivered after all retries", msg_id)
 
 
 # ---------------------------------------------------------------------------

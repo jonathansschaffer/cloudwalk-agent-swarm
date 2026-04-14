@@ -9,24 +9,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# ── CRITICAL: install PyTorch CPU-only BEFORE other packages ──────────────────
+# Without this, pip resolves the full GPU wheel (~750 MB) which causes Railway's
+# build to time out. The CPU wheel is ~200 MB and sufficient for inference.
+RUN pip install --no-cache-dir torch \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# Install remaining Python dependencies (torch is already satisfied — no GPU wheel pulled)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Pre-download the embedding model so it's baked into the image.
-# This avoids a download on every container start.
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
 # Copy application source
 COPY . .
 
-# Create data directories (volume mount will overlay these at runtime)
+# Create data directories (chroma_db is committed; scraped_cache is generated)
 RUN mkdir -p data/chroma_db data/scraped_cache
 
 EXPOSE 8000
 
-# Health check: ensure the /health endpoint responds
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+# Give 5 minutes for first start: embedding model downloads (~90 MB) on first use
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=5 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Railway injects $PORT; falls back to 8000 for local runs.
