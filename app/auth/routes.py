@@ -69,9 +69,11 @@ class UserOut(BaseModel):
     member_since: str
     lgpd_consent_at: datetime
     telegram_linked: bool
+    telegram_username: str | None = None  # @handle (without @) if linked, else None
 
     @classmethod
     def from_user(cls, user: User) -> "UserOut":
+        link = user.telegram_link
         return cls(
             id=user.id,
             email=user.email,
@@ -81,7 +83,8 @@ class UserOut(BaseModel):
             kyc_verified=user.kyc_verified,
             member_since=user.member_since,
             lgpd_consent_at=user.lgpd_consent_at,
-            telegram_linked=user.telegram_link is not None,
+            telegram_linked=link is not None,
+            telegram_username=link.telegram_username if link else None,
         )
 
 
@@ -194,9 +197,16 @@ def issue_telegram_code(
     Issues a single-use 6-char code. The user sends `/link <code>` in Telegram
     to bind their Telegram account to this authenticated web session.
 
+    Returns 409 if the account is already linked to a Telegram user.
     Codes are valid for 10 minutes and invalidate any earlier unused codes
     for the same user (so refreshing the page always yields exactly one live code).
     """
+    if user.telegram_link is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Esta conta já está vinculada ao Telegram.",
+        )
+
     # Invalidate previous unused codes for this user
     db.query(TelegramLinkCode).filter(
         TelegramLinkCode.user_id == user.id,

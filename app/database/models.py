@@ -113,7 +113,7 @@ class ChatMessage(Base):
     intent = Column(String(32), nullable=False, default="")
     ticket_id = Column(String(32), nullable=True)
     escalated = Column(Boolean, nullable=False, default=False)
-    language = Column(String(4), nullable=False, default="en")
+    language = Column(String(16), nullable=False, default="en")
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, index=True)
 
     user = relationship("User", back_populates="chat_messages")
@@ -127,6 +127,7 @@ class TelegramLink(Base):
     telegram_user_id = Column(String(32), primary_key=True)  # Telegram's numeric id as str
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
     linked_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    telegram_username = Column(String(64), nullable=True)  # @handle without the @, may be None
 
     user = relationship("User", back_populates="telegram_link")
 

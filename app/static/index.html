@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>InfinitePay Assistant</title>
   <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
 
@@ -59,7 +59,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      height: 100vh;
+      height: 100dvh;
       padding: 20px;
       background: radial-gradient(circle at top, rgba(0,200,83,0.08), transparent 60%), var(--bg-page);
     }
@@ -206,7 +206,7 @@
     .app {
       display: grid;
       grid-template-columns: 280px 1fr;
-      height: 100vh;
+      height: 100dvh;
     }
 
     /* Sidebar */
@@ -459,7 +459,7 @@
       border-left: 3px solid var(--green); padding-left: 12px;
       margin: 8px 0; color: var(--text-secondary); font-style: italic;
     }
-    .bubble table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 0; }
+    .bubble table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 0; display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
     .bubble th, .bubble td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; }
     .bubble th { background: var(--bg-page); color: var(--green-light); font-weight: 600; }
     .bubble td { background: rgba(0,0,0,0.2); }
@@ -542,9 +542,10 @@
       background: rgba(0,200,83,0.1); border-color: rgba(0,200,83,0.4); color: var(--green-light);
     }
 
-    /* Input area */
+    /* Input area — extra bottom padding for iOS safe area (notch / home bar) */
     .input-area {
       padding: 16px 20px;
+      padding-bottom: max(16px, env(safe-area-inset-bottom));
       background: var(--bg-card);
       border-top: 1px solid var(--border);
       flex-shrink: 0;
@@ -877,7 +878,17 @@
 
     <!-- Telegram view -->
     <div id="telegramView" class="panel hidden">
-      <div class="card">
+      <!-- State A: already linked -->
+      <div id="telegramLinkedCard" class="card hidden">
+        <h3>📲 Telegram vinculado</h3>
+        <p>Sua conta já está vinculada ao Telegram.</p>
+        <p id="telegramLinkedHandle" style="font-size: 18px; font-weight: 700; color: var(--green); margin: 12px 0;"></p>
+        <p style="font-size: 13px; color: var(--text-secondary);">
+          Para desvincular, exclua sua conta ou entre em contato com o suporte.
+        </p>
+      </div>
+      <!-- State B: not yet linked -->
+      <div id="telegramUnlinkedCard" class="card hidden">
         <h3>📲 Vincular conta ao Telegram</h3>
         <p>
           Para usar o assistente pelo Telegram, vincule sua conta gerando um código
@@ -905,7 +916,7 @@
           <strong>E-mail:</strong> <span id="accEmail">—</span><br/>
           <strong>Plano:</strong> <span id="accPlan">—</span><br/>
           <strong>Status da conta:</strong> <span id="accStatus">—</span><br/>
-          <strong>Telegram vinculado:</strong> <span id="accTelegram">—</span><br/>
+          <strong>Telegram:</strong> <span id="accTelegram">—</span><br/>
           <strong>Consentimento LGPD em:</strong> <span id="accConsent">—</span>
         </p>
       </div>
@@ -1099,7 +1110,9 @@
     document.getElementById('accEmail').textContent = currentUser.email;
     document.getElementById('accPlan').textContent = currentUser.plan || '—';
     document.getElementById('accStatus').textContent = currentUser.account_status || '—';
-    document.getElementById('accTelegram').textContent = currentUser.telegram_linked ? 'Sim ✅' : 'Não';
+    document.getElementById('accTelegram').textContent = currentUser.telegram_linked
+      ? (currentUser.telegram_username ? `@${currentUser.telegram_username} ✅` : 'Vinculado ✅')
+      : 'Não vinculado';
     document.getElementById('accConsent').textContent = currentUser.lgpd_consent_at
       ? new Date(currentUser.lgpd_consent_at).toLocaleString('pt-BR') : '—';
   }
@@ -1183,13 +1196,16 @@
   // Telegram pairing
   // =========================================================
   function renderTelegramInitial() {
-    const box = document.getElementById('telegramCodeBox');
-    const statusEl = document.getElementById('telegramStatus');
-    box.classList.add('hidden');
-    if (currentUser && currentUser.telegram_linked) {
-      statusEl.textContent = '✅ Já vinculado';
+    const linked   = currentUser && currentUser.telegram_linked;
+    const username = currentUser && currentUser.telegram_username;
+    document.getElementById('telegramLinkedCard').classList.toggle('hidden', !linked);
+    document.getElementById('telegramUnlinkedCard').classList.toggle('hidden', !!linked);
+    if (linked) {
+      document.getElementById('telegramLinkedHandle').textContent =
+        username ? `@${username}` : '(sem @username configurado no Telegram)';
     } else {
-      statusEl.textContent = '';
+      document.getElementById('telegramCodeBox').classList.add('hidden');
+      document.getElementById('telegramStatus').textContent = '';
     }
   }
 

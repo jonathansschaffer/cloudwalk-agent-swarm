@@ -46,10 +46,36 @@ SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, futu
 
 def init_db() -> None:
     """Creates all tables. Safe to call on every startup."""
-    # Import models so they register with Base.metadata before create_all.
     from app.database import models  # noqa: F401
     Base.metadata.create_all(bind=engine)
+    _run_schema_patches()
     logger.info("Database schema ready (url=%s)", engine.url.render_as_string(hide_password=True))
+
+
+def _run_schema_patches() -> None:
+    """Idempotent ALTER TABLE patches for columns that changed type after initial creation.
+
+    Only runs on PostgreSQL — SQLite recreates tables fresh each run.
+    Each statement is wrapped in its own try/except so one failure doesn't
+    block the rest.
+    """
+    from sqlalchemy import text
+    if not str(engine.url).startswith("postgresql"):
+        return
+    patches = [
+        # language VARCHAR(4) → VARCHAR(16) to accommodate values like 'other'
+        "ALTER TABLE chat_messages ALTER COLUMN language TYPE VARCHAR(16)",
+        # telegram_username column added after initial schema creation
+        "ALTER TABLE telegram_links ADD COLUMN IF NOT EXISTS telegram_username VARCHAR(64)",
+    ]
+    with engine.connect() as conn:
+        for sql in patches:
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+            except Exception as exc:
+                conn.rollback()
+                logger.debug("Schema patch skipped (%s): %s", sql[:60], exc)
 
 
 def get_db() -> Iterator[Session]:

@@ -247,7 +247,7 @@ def _resolve_linked_user(telegram_user_id: int) -> int | None:
         return link.user_id if link else None
 
 
-def _consume_link_code(code: str, telegram_user_id: int) -> tuple[bool, str]:
+def _consume_link_code(code: str, telegram_user_id: int, telegram_username: str | None = None) -> tuple[bool, str]:
     """
     Validates and consumes a one-shot linking code.
 
@@ -290,6 +290,7 @@ def _consume_link_code(code: str, telegram_user_id: int) -> tuple[bool, str]:
             telegram_user_id=str(telegram_user_id),
             user_id=row.user_id,
             linked_at=now,
+            telegram_username=telegram_username,
         ))
         row.used_at = now
         user = db.query(User).filter(User.id == row.user_id).one()
@@ -423,7 +424,8 @@ async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    success, message = _consume_link_code(args[0], update.effective_user.id)
+    tg_user = update.effective_user
+    success, message = _consume_link_code(args[0], tg_user.id, tg_user.username)
     await _safe_reply(update, message, parse_mode=ParseMode.HTML, msg_id="link")
 
 
