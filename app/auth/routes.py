@@ -88,7 +88,11 @@ class RegisterIn(BaseModel):
 
 
 class LoginIn(BaseModel):
-    email: EmailStr
+    # Intentionally `str`, not `EmailStr`: pydantic's email-validator rejects
+    # IANA special-use TLDs (`.test`, `.example`, …), which are valid for
+    # seeded demo accounts. Login only needs to match an existing row — the
+    # identity was already validated at register time.
+    email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=1, max_length=128)
     captcha_token: str | None = Field(
         default=None,
