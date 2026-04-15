@@ -170,13 +170,16 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["Strict-Transport-Security"] = (
                 "max-age=31536000; includeSubDomains; preload"
             )
-        # Allow scripts from self + cdn.jsdelivr.net (marked.js CDN used by frontend)
+        # CSP allowlist:
+        # - cdn.jsdelivr.net: marked.js (Markdown rendering)
+        # - challenges.cloudflare.com: Turnstile CAPTCHA loader + iframe + siteverify
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://challenges.cloudflare.com; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; "
-            "connect-src 'self'; "
+            "connect-src 'self' https://challenges.cloudflare.com; "
+            "frame-src https://challenges.cloudflare.com; "
             "font-src 'self'; "
             "frame-ancestors 'none';"
         )
