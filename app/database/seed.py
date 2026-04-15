@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.auth.security import hash_password
+from app.auth.security import hash_password, verify_password
 from app.config import MOCK_USER_PASSWORD, SEED_MOCK_USERS
 from app.database.models import Transaction, User
 
@@ -116,7 +116,13 @@ _SEED_USERS: list[dict] = [
 
 
 def seed_mock_users(db: Session) -> int:
-    """Inserts missing seed users and returns the number of rows created."""
+    """Inserts missing seed users and updates stale password hashes.
+
+    Idempotent on schema, but re-hashes existing seed accounts when
+    MOCK_USER_PASSWORD has changed since they were first seeded — so
+    rotating the env var on Railway takes effect on the next startup
+    without manual SQL.
+    """
     if not SEED_MOCK_USERS:
         logger.info("SEED_MOCK_USERS is disabled — skipping seed.")
         return 0
@@ -124,10 +130,15 @@ def seed_mock_users(db: Session) -> int:
     password_hash = hash_password(MOCK_USER_PASSWORD)
     now = datetime.now(timezone.utc)
     inserted = 0
+    updated = 0
 
     for seed in _SEED_USERS:
         existing = db.query(User).filter(User.email == seed["email"]).one_or_none()
         if existing is not None:
+            # Re-hash if MOCK_USER_PASSWORD was rotated since the user was created.
+            if not verify_password(MOCK_USER_PASSWORD, existing.password_hash):
+                existing.password_hash = password_hash
+                updated += 1
             continue
 
         user = User(
@@ -156,6 +167,6 @@ def seed_mock_users(db: Session) -> int:
         inserted += 1
 
     db.commit()
-    if inserted:
-        logger.info("Seeded %d mock users.", inserted)
+    if inserted or updated:
+        logger.info("Seed: %d inserted, %d password(s) updated.", inserted, updated)
     return inserted
