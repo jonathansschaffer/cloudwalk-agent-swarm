@@ -199,6 +199,20 @@
 
     .form-error.visible { display: block; }
 
+    .form-success {
+      background: rgba(62,207,142,0.1);
+      border: 1px solid rgba(62,207,142,0.35);
+      color: #7ae2b0;
+      padding: 12px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      margin-bottom: 14px;
+      display: none;
+      line-height: 1.4;
+    }
+    .form-success.visible { display: block; }
+    .form-success strong { color: #a6f0cc; }
+
     .hidden { display: none !important; }
 
     /* ========================================================= */
@@ -747,6 +761,7 @@
     </div>
     <h2>Entrar</h2>
     <p class="subtitle">Acesse sua conta para conversar com nosso assistente.</p>
+    <div id="loginSuccess" class="form-success"></div>
     <div id="loginError" class="form-error"></div>
     <form id="loginForm" onsubmit="doLogin(event)">
       <div class="form-group">
@@ -991,6 +1006,18 @@
     el.textContent = '';
   }
 
+  function showSuccess(targetId, html) {
+    const el = document.getElementById(targetId);
+    el.innerHTML = html;
+    el.classList.add('visible');
+  }
+
+  function clearSuccess(targetId) {
+    const el = document.getElementById(targetId);
+    el.classList.remove('visible');
+    el.innerHTML = '';
+  }
+
   // =========================================================
   // Cloudflare Turnstile — fetched once, rendered on demand.
   // =========================================================
@@ -1044,6 +1071,7 @@
   async function doLogin(event) {
     event.preventDefault();
     clearError('loginError');
+    clearSuccess('loginSuccess');
     const btn = document.getElementById('loginBtn');
     btn.disabled = true;
     btn.textContent = 'Entrando…';
@@ -1139,11 +1167,17 @@
         showError('registerError', msg);
         return;
       }
-      // HIGH-03: /auth/register is enumeration-safe and always returns 202 with
-      // a generic message. The user must confirm their email before logging in.
-      alert(data.detail || 'Se o email estiver disponível, enviaremos instruções de confirmação em alguns instantes.');
+      const registeredEmail = document.getElementById('regEmail').value.trim();
       document.getElementById('registerForm').reset();
       showScreen('loginScreen');
+      if (registeredEmail) {
+        document.getElementById('loginEmail').value = registeredEmail;
+        document.getElementById('loginPassword').focus();
+      }
+      clearError('loginError');
+      showSuccess('loginSuccess',
+        '<strong>Conta criada com sucesso.</strong><br>Entre com seu e-mail e senha para continuar.'
+      );
     } catch (e) {
       showError('registerError', 'Erro de conexão. Tente novamente.');
     } finally {

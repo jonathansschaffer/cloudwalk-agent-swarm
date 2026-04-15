@@ -67,10 +67,10 @@ def _run_schema_patches() -> None:
         "ALTER TABLE chat_messages ALTER COLUMN language TYPE VARCHAR(16)",
         # telegram_username column added after initial schema creation
         "ALTER TABLE telegram_links ADD COLUMN IF NOT EXISTS telegram_username VARCHAR(64)",
-        # Phase 1.5 Commit C: admin flag + email-verification marker on users.
-        # Without these the seeded-user SELECT on startup fails against prod
-        # Postgres (ORM selects every column; missing columns → UndefinedColumn
-        # → seed crashes → /health never comes up → Railway healthcheck fails).
+        # admin flag + email-verification marker on users. Without these the
+        # seeded-user SELECT on startup fails against prod Postgres (ORM
+        # selects every column; missing columns → UndefinedColumn → seed
+        # crashes → /health never comes up → Railway healthcheck fails).
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE",
         # legacy_id column removed — emails are the stable seed identifier now.

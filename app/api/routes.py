@@ -13,22 +13,33 @@ cannot read anyone else's history.
 """
 
 import logging
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 
-def _client_ip(request: Request) -> str:
-    """Rate-limit key that honors X-Forwarded-For when behind a trusted proxy.
+_TRUSTED_PROXY_HOPS = int(os.getenv("TRUSTED_PROXY_HOPS", "1"))
 
-    Railway / Cloudflare / NGINX append the real client IP as the first hop
-    of X-Forwarded-For. Using `get_remote_address` alone would see only the
-    proxy's IP and make all users share a single bucket.
+
+def _client_ip(request: Request) -> str:
+    """Rate-limit key that resists X-Forwarded-For spoofing.
+
+    Railway's edge (and most reverse proxies) *append* the real client IP to
+    the end of X-Forwarded-For. Taking the first value would let any attacker
+    supply arbitrary IPs in their own header and bypass per-IP throttles —
+    see the HIGH finding in security-assessment-report.md (2026-04-15).
+
+    We instead skip `TRUSTED_PROXY_HOPS` values from the right (default 1 for
+    Railway's single edge hop), which is the last attacker-untrusted value.
     """
     xff = request.headers.get("x-forwarded-for")
     if xff:
-        return xff.split(",")[0].strip()
+        hops = [h.strip() for h in xff.split(",") if h.strip()]
+        if hops:
+            idx = max(0, len(hops) - _TRUSTED_PROXY_HOPS)
+            return hops[min(idx, len(hops) - 1)]
     return get_remote_address(request)
 
 
@@ -83,13 +94,11 @@ def chat(
 ) -> ChatResponse:
     """Processes a user message through the InfinitePay Assistant."""
     try:
-        # user_id fed into the agent graph is the DB id.
         agent_user_id = str(user.id)
 
-        # Response cache — cheap O(1) lookup for repeated KB questions across
-        # users. Returns None on miss, disabled, or for non-KB intents. We
-        # detect language up-front so the cache key is consistent with the
-        # router's own detection.
+        # Detect language before the cache lookup so the cache key matches
+        # what the router will derive later — otherwise cache hits skew
+        # toward whichever path ran first for a given message.
         detected_lang = detect_language(body.message)
         cached = response_cache.lookup(body.message, detected_lang)
         if cached is not None:
@@ -269,13 +278,11 @@ def list_tickets(user: User = Depends(_get_user_dep())) -> dict:
 
 @router.get("/health", summary="Public liveness probe")
 def health() -> dict:
-    """Public — minimal by design (MEDIUM-09). Load balancers only need to
-    know that the process is up, not how many docs are indexed or whether
-    internal flags are set. Details live on /admin/health.
+    """Public — minimal by design. Load balancers only need to know the
+    process is up; KB size and internal flags live on /admin/health.
 
-    Frontend note: the `show_agent_badge` flag used to live here; it moved to
-    `/admin/health` but is also surfaced on this endpoint because the web UI
-    reads it before the user logs in. Keep it minimal — nothing else leaks."""
+    `show_agent_badge` is surfaced here because the web UI reads it before the
+    user logs in. Keep it minimal — nothing else leaks."""
     from app.config import SHOW_AGENT_BADGE
     return {"status": "ok", "show_agent_badge": SHOW_AGENT_BADGE}
 

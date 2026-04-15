@@ -454,7 +454,18 @@ async def telegram_webhook(request: Request) -> JSONResponse:
 
 @app.get("/metrics", include_in_schema=False)
 def metrics(request: Request):
-    """Prometheus exposition (default) or JSON snapshot with ?format=json."""
+    """Prometheus exposition (default) or JSON snapshot with ?format=json.
+
+    When METRICS_TOKEN is set, a matching Bearer token is required — otherwise
+    the endpoint is open (dev-friendly default, but set a token in production
+    so endpoint hit counts / reconnaissance aren't world-readable).
+    """
+    expected = os.getenv("METRICS_TOKEN", "")
+    if expected:
+        auth = request.headers.get("authorization", "")
+        if not auth.lower().startswith("bearer ") or auth[7:].strip() != expected:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=401, detail="Unauthorized")
     if request.query_params.get("format") == "json":
         return JSONResponse({"requests": METRICS.snapshot()})
     from fastapi.responses import PlainTextResponse

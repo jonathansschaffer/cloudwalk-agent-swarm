@@ -19,8 +19,9 @@ python scripts/build_knowledge_base.py --no-cache --rebuild   # re-scrape all 18
 
 # Tests
 pytest tests/ -v                                              # full suite
-pytest tests/test_router.py -v                                # single file
-pytest tests/test_router.py::test_classify_product_query -v   # single test
+pytest tests/agents/ -v                                       # agents only
+pytest tests/agents/test_router.py::test_classify_product_query -v   # single test
+# Subfolders: tests/{agents,api,rag,security,unit}/
 python scripts/test_agents.py                                 # manual end-to-end scenario run
 ```
 

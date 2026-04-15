@@ -194,18 +194,16 @@ def _send_unlock_email(to: str, name: str, token: str) -> None:
 
 class RegisterAck(BaseModel):
     """Generic response for /auth/register — no account-existence signal."""
-    detail: str = "Se o email estiver disponível, enviaremos instruções de confirmação."
+    detail: str = "Cadastro recebido. Se o email estiver disponível, a conta foi criada — faça login para continuar."
 
 
 @router.post("/register", response_model=RegisterAck, status_code=status.HTTP_202_ACCEPTED)
 @limiter.limit("5/minute;20/hour")
 def register(request: Request, body: RegisterIn, db: Session = Depends(get_db)) -> RegisterAck:
-    """HIGH-03: we never leak whether an email is already registered.
+    """Enumeration-safe registration.
 
-    Always return the same 202 + generic body. Behind the scenes we either
-    create the account (issuing a verification token) or silently drop the
-    request when the email is already taken. Either way the user walks away
-    with the same message: "check your inbox". Attackers learn nothing.
+    Always returns the same 202 + generic body regardless of whether the email
+    was already taken, so attackers can't probe for registered accounts.
     """
     if not body.lgpd_consent:
         raise HTTPException(
@@ -365,7 +363,7 @@ def login(request: Request, body: LoginIn, db: Session = Depends(get_db)) -> Tok
         if user is not None:
             user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
             # Cross the threshold on *this* attempt? Send a one-time unlock
-            # mail so the user isn't locked out indefinitely (HIGH-04 loop).
+            # mail so the user isn't locked out indefinitely.
             crossed = user.failed_login_attempts == LOGIN_LOCKOUT_THRESHOLD
             db.commit()
             if crossed:
