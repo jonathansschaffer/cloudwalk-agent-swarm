@@ -42,6 +42,9 @@ slowapi>=0.1.9
 # Retry Logic
 tenacity>=8.0.0
 
+# Optional tracing (LangSmith). Auto-activates when LANGSMITH_API_KEY is set.
+langsmith>=0.1.100
+
 # Database (PostgreSQL via Railway addon; falls back to SQLite for local dev)
 sqlalchemy>=2.0.30
 psycopg2-binary>=2.9.9

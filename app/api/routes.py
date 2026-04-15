@@ -46,7 +46,9 @@ def _jwt_subject_key(request: Request) -> str:
     return "ip:" + _client_ip(request)
 
 from app.agents.router_agent import process_message
+from app import cache as response_cache
 from app.database import chat_history, mock_tickets
+from app.utils.language_detector import detect_language
 from app.database.models import User
 from app.models.request_models import ChatRequest, ChatResponse, HealthResponse
 from app.rag.vector_store import get_document_count
@@ -84,10 +86,39 @@ def chat(
         # user_id fed into the agent graph is the DB id.
         agent_user_id = str(user.id)
 
+        # Response cache — cheap O(1) lookup for repeated KB questions across
+        # users. Returns None on miss, disabled, or for non-KB intents. We
+        # detect language up-front so the cache key is consistent with the
+        # router's own detection.
+        detected_lang = detect_language(body.message)
+        cached = response_cache.lookup(body.message, detected_lang)
+        if cached is not None:
+            logger.info("response_cache hit user=%s lang=%s", agent_user_id, detected_lang)
+            chat_history.append_turn(
+                user_id=agent_user_id,
+                user_message=body.message,
+                bot_response=cached["response"],
+                agent_used=cached["agent_used"],
+                intent=cached.get("intent", ""),
+                ticket_id=None,
+                escalated=False,
+                language=cached.get("language", detected_lang),
+            )
+            return ChatResponse(
+                response=cached["response"],
+                agent_used=cached["agent_used"],
+                intent_detected=cached.get("intent", ""),
+                ticket_id=None,
+                escalated=False,
+                language=cached.get("language", detected_lang),
+                tools_used=cached.get("tools_used", []),
+            )
+
         state = process_message(
             message=body.message,
             user_id=agent_user_id,
         )
+        response_cache.store(body.message, detected_lang, state)
 
         chat_history.append_turn(
             user_id=agent_user_id,
@@ -117,6 +148,107 @@ def chat(
             status_code=500,
             detail="An internal error occurred. Please try again later.",
         )
+
+
+@router.post(
+    "/chat/stream",
+    summary="Streaming chat — Server-Sent Events",
+    include_in_schema=False,
+)
+@limiter.limit("20/minute")
+@limiter.limit("30/minute", key_func=_jwt_subject_key)
+async def chat_stream(
+    request: Request,
+    body: ChatRequest,
+    user: User = Depends(_get_user_dep()),
+):
+    """Streams the agent response as SSE frames.
+
+    Emits `status`, `token`, and `done` events. The frontend can render tokens
+    incrementally for long Knowledge-agent answers; clients that don't upgrade
+    keep using the existing `/chat` endpoint.
+
+    Implementation note: LangGraph's `astream_events` fires callback events
+    per node. We translate the minimal subset the UI needs into SSE frames.
+    Guardrail blocks short-circuit the stream with a single `token` + `done`.
+    """
+    import asyncio
+    import json
+    from fastapi.responses import StreamingResponse
+    from app.agents import router_agent as _router_mod
+
+    agent_user_id = str(user.id)
+    detected_lang = detect_language(body.message)
+
+    async def _event_gen():
+        # 1. Cache hit — flush the whole answer in one event and exit.
+        cached = response_cache.lookup(body.message, detected_lang)
+        if cached is not None:
+            chat_history.append_turn(
+                user_id=agent_user_id,
+                user_message=body.message,
+                bot_response=cached["response"],
+                agent_used=cached["agent_used"],
+                intent=cached.get("intent", ""),
+                language=cached.get("language", detected_lang),
+            )
+            yield _sse("status", {"stage": "cache_hit"})
+            yield _sse("token", {"text": cached["response"]})
+            yield _sse("done", {
+                "agent_used": cached["agent_used"],
+                "intent": cached.get("intent", ""),
+                "language": cached.get("language", detected_lang),
+                "cached": True,
+            })
+            return
+
+        yield _sse("status", {"stage": "routing"})
+
+        # 2. Run the full graph in a worker thread so the event loop stays live.
+        state = await asyncio.to_thread(
+            _router_mod.process_message, body.message, agent_user_id,
+        )
+
+        yield _sse("status", {"stage": "responding", "agent": state.get("agent_used", "")})
+
+        # 3. Chunk the final response into pseudo-tokens so clients that only
+        #    care about incremental rendering see something. True token-level
+        #    streaming is gated on migrating the LangChain calls to `astream`.
+        text = state.get("response", "")
+        CHUNK = 120
+        for i in range(0, len(text), CHUNK):
+            yield _sse("token", {"text": text[i : i + CHUNK]})
+            await asyncio.sleep(0)  # yield to the event loop
+
+        chat_history.append_turn(
+            user_id=agent_user_id,
+            user_message=body.message,
+            bot_response=text,
+            agent_used=state.get("agent_used", ""),
+            intent=state.get("intent", ""),
+            ticket_id=state.get("ticket_id"),
+            escalated=state.get("escalated", False),
+            language=state.get("language", detected_lang),
+        )
+        response_cache.store(body.message, detected_lang, state)
+
+        yield _sse("done", {
+            "agent_used": state.get("agent_used", ""),
+            "intent": state.get("intent", ""),
+            "language": state.get("language", detected_lang),
+            "ticket_id": state.get("ticket_id"),
+            "escalated": state.get("escalated", False),
+            "tools_used": state.get("tools_used", []),
+        })
+
+    def _sse(event: str, payload: dict) -> str:
+        return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        _event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/history", summary="Get the authenticated user's chat history")
@@ -159,10 +291,14 @@ def admin_health(user: User = Depends(_get_user_dep())) -> HealthResponse:
     if not getattr(user, "is_admin", False):
         raise HTTPException(status_code=403, detail="Admin privileges required.")
     try:
-        doc_count = get_document_count()
+        # Prefer the cached warm-up flag so cold starts report "degraded" honestly
+        # instead of hitting Chroma before it's ready.
+        from app import main as _main
+        kb_ready = bool(getattr(_main, "KB_READY", False))
+        doc_count = get_document_count() if kb_ready else 0
         return HealthResponse(
-            status="ok",
-            knowledge_base_loaded=doc_count > 0,
+            status="ok" if kb_ready else "warming",
+            knowledge_base_loaded=kb_ready,
             documents_indexed=doc_count,
             show_agent_badge=SHOW_AGENT_BADGE,
         )

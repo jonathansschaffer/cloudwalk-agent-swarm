@@ -41,10 +41,12 @@ GOLD: list[tuple[str, list[str]]] = [
      ["conta", "digital", "account"]),
     ("Quanto custa a conta digital InfinitePay?",
      ["conta", "digital"]),
+    # Fee disclosures live on the product pages (maquininha/pdv/tap-to-pay),
+    # not on dedicated `/taxas` URLs — the gold substrings reflect that.
     ("debit card transaction rates",
-     ["taxa", "debito", "debit", "cartao"]),
+     ["maquininha", "pdv", "tap-to-pay", "cartao"]),
     ("Quais as taxas para crédito parcelado?",
-     ["taxa", "credito", "parcelado"]),
+     ["maquininha", "pdv", "tap-to-pay", "pix-parcelado"]),
 ]
 
 # SLA targets. Tune down if the KB shrinks; never tune up silently.

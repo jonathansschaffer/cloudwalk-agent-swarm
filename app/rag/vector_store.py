@@ -68,7 +68,17 @@ def add_documents(chunks: list[dict]) -> None:
     # Build batch inputs
     ids = [f"{c['url']}__chunk_{c['chunk_index']}" for c in chunks]
     documents = [c["content"] for c in chunks]
-    metadatas = [{"url": c["url"], "title": c["title"]} for c in chunks]
+    metadatas = [
+        {
+            "url": c["url"],
+            "title": c["title"],
+            # Per-URL content hash — same value on every chunk from the same
+            # URL. Used by the incremental pipeline to decide whether to
+            # re-scrape/re-embed (see app/rag/pipeline.build_knowledge_base).
+            "content_hash": c.get("content_hash", ""),
+        }
+        for c in chunks
+    ]
 
     # Generate embeddings in one batch
     logger.info("Generating embeddings for %d chunks...", len(chunks))
@@ -129,6 +139,46 @@ def similarity_search(query: str, k: int = TOP_K_RETRIEVAL) -> list[dict]:
         )
 
     return output
+
+
+def get_indexed_url_hashes() -> dict[str, str]:
+    """Returns {url: content_hash} for every URL currently indexed.
+
+    Used by the incremental pipeline: if the freshly-scraped hash matches what
+    we already stored, we skip re-chunking + re-embedding that URL entirely.
+    """
+    collection = _get_collection()
+    if collection.count() == 0:
+        return {}
+    try:
+        data = collection.get(include=["metadatas"])
+    except Exception as exc:
+        logger.warning("Failed to enumerate existing metadatas: %s", exc)
+        return {}
+    out: dict[str, str] = {}
+    for meta in data.get("metadatas", []) or []:
+        if not meta:
+            continue
+        url = meta.get("url")
+        h = meta.get("content_hash") or ""
+        if url and url not in out:
+            out[url] = h
+    return out
+
+
+def delete_by_url(url: str) -> int:
+    """Removes every chunk belonging to a given URL. Returns deletion count."""
+    collection = _get_collection()
+    try:
+        existing = collection.get(where={"url": url}, include=[])
+        ids = existing.get("ids") or []
+        if not ids:
+            return 0
+        collection.delete(ids=ids)
+        return len(ids)
+    except Exception as exc:
+        logger.warning("delete_by_url(%s) failed: %s", url, exc)
+        return 0
 
 
 def reset_collection() -> None:

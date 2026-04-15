@@ -39,12 +39,21 @@ from app.config import (
     TELEGRAM_WEBHOOK_SECRET,
     ALLOWED_ORIGINS,
     ENABLE_DOCS,
+    ENVIRONMENT,
+    JWT_SECRET,
+    MOCK_USER_PASSWORD,
+    LANGSMITH_TRACING,
+    LANGSMITH_PROJECT,
 )
 from app.api.routes import router, limiter
 from app.auth.routes import router as auth_router
 from app.database.db import SessionLocal, init_db
 from app.database.seed import seed_mock_users
 from app.rag.pipeline import build_knowledge_base
+
+# Set to True once the RAG warm-up task finishes. The Knowledge agent and
+# /admin/health read this flag instead of polling ChromaDB on every request.
+KB_READY: bool = False
 
 # Configure logging before anything else
 setup_logging()
@@ -175,6 +184,56 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 # ------------------------------------------------------------------ #
+# Startup safety checks                                                #
+# ------------------------------------------------------------------ #
+
+_INSECURE_JWT_SECRETS = {"change-me-in-production", "dev-only-change-me-32chars-minimum-ok"}
+_INSECURE_MOCK_PASSWORDS = {"Test123!"}
+
+
+def _check_insecure_production_config() -> None:
+    """Emit a CRITICAL log (and audit event) when prod is running with
+    seeded/default secrets. Never blocks boot — Railway must stay green."""
+    if ENVIRONMENT != "production":
+        return
+    warnings: list[str] = []
+    if JWT_SECRET in _INSECURE_JWT_SECRETS or len(JWT_SECRET) < 32:
+        warnings.append("JWT_SECRET is default or shorter than 32 chars — rotate immediately")
+    if MOCK_USER_PASSWORD in _INSECURE_MOCK_PASSWORDS:
+        warnings.append("MOCK_USER_PASSWORD is the seeded default — rotate before external testing")
+    if not warnings:
+        return
+    for msg in warnings:
+        logger.critical("INSECURE CONFIG: %s", msg)
+    try:
+        from app.audit import emit as audit_emit  # lazy import to avoid cycles at module load
+        audit_emit(
+            event_type="insecure_config",
+            detail="; ".join(warnings),
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.debug("Audit emit failed for insecure_config: %s", exc)
+
+
+async def _warmup_knowledge_base() -> None:
+    """Runs the (blocking) RAG build inside a thread pool so the FastAPI
+    event loop can start serving /health right away. Flips KB_READY when done."""
+    global KB_READY
+    try:
+        import asyncio as _asyncio
+        logger.info("Knowledge base warm-up starting (background)…")
+        doc_count = await _asyncio.to_thread(build_knowledge_base, False)
+        KB_READY = doc_count > 0
+        if KB_READY:
+            logger.info("Knowledge base ready with %d documents.", doc_count)
+        else:
+            logger.warning("Knowledge base is empty — RAG responses will be limited.")
+    except Exception as exc:
+        logger.error("Knowledge base warm-up failed: %s", exc, exc_info=True)
+        KB_READY = False
+
+
+# ------------------------------------------------------------------ #
 # Lifespan                                                            #
 # ------------------------------------------------------------------ #
 
@@ -186,19 +245,21 @@ async def lifespan(app: FastAPI):
 
     # Validate required configuration (raises on missing ANTHROPIC_API_KEY)
     validate_config()
+    _check_insecure_production_config()
+
+    if LANGSMITH_TRACING:
+        logger.info("LangSmith tracing ENABLED (project=%s).", LANGSMITH_PROJECT)
 
     # Initialize database schema + seed mock users on first run
     init_db()
     with SessionLocal() as db:
         seed_mock_users(db)
 
-    # Build vector knowledge base if not already populated
-    logger.info("Checking knowledge base...")
-    doc_count = build_knowledge_base(force_rebuild=False)
-    if doc_count > 0:
-        logger.info("Knowledge base ready with %d documents.", doc_count)
-    else:
-        logger.warning("Knowledge base is empty — RAG responses may be limited.")
+    # Kick off the RAG warm-up in the background so /health responds
+    # immediately even on the very first cold start. The Knowledge agent
+    # checks KB_READY and degrades gracefully until the task completes.
+    import asyncio as _asyncio
+    _asyncio.create_task(_warmup_knowledge_base())
 
     # ------------------------------------------------------------------ #
     # Telegram bot — webhook mode (prod) or long-polling (local dev)     #

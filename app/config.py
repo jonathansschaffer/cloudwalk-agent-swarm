@@ -155,6 +155,44 @@ MOCK_USER_PASSWORD: str = os.getenv("MOCK_USER_PASSWORD", "Test123!")
 SEED_MOCK_USERS: bool = os.getenv("SEED_MOCK_USERS", "true").lower() in {"1", "true", "yes"}
 
 # ---------------------------------------------------------------------------
+# Response cache
+# ---------------------------------------------------------------------------
+# TTL in seconds for cached knowledge-base responses. Set to 0 to disable.
+# Only KNOWLEDGE_PRODUCT / KNOWLEDGE_GENERAL responses are cached; support
+# and escalation replies are never cached (per-user CRM data).
+RESPONSE_CACHE_TTL_SECONDS: int = int(os.getenv("RESPONSE_CACHE_TTL_SECONDS", "900"))
+
+# ---------------------------------------------------------------------------
+# Runtime environment
+# ---------------------------------------------------------------------------
+
+# Free-form environment tag — used to gate the insecure-config warnings on
+# startup. Set ENVIRONMENT=production on Railway; leave empty / "development"
+# locally so tests don't page over seeded defaults.
+ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development").lower()
+
+# ---------------------------------------------------------------------------
+# LangSmith tracing (optional)
+# ---------------------------------------------------------------------------
+# Opt-in via LANGSMITH_API_KEY. When set, LangChain automatically exports
+# per-node traces (including the router graph + both ReAct agents) to the
+# project configured in LANGSMITH_PROJECT. We read-through to the LANGCHAIN_*
+# env vars the SDK expects, so users can set either spelling.
+LANGSMITH_API_KEY: str = os.getenv("LANGSMITH_API_KEY", "") or os.getenv("LANGCHAIN_API_KEY", "")
+LANGSMITH_PROJECT: str = os.getenv("LANGSMITH_PROJECT", "") or os.getenv(
+    "LANGCHAIN_PROJECT", "InfinitePay Agent Swarm"
+)
+LANGSMITH_TRACING: bool = bool(LANGSMITH_API_KEY) and os.getenv(
+    "LANGSMITH_TRACING", "true"
+).lower() in {"1", "true", "yes"}
+
+if LANGSMITH_TRACING:
+    # The LangChain runtime reads these at import time.
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+    os.environ.setdefault("LANGCHAIN_API_KEY", LANGSMITH_API_KEY)
+    os.environ.setdefault("LANGCHAIN_PROJECT", LANGSMITH_PROJECT)
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 

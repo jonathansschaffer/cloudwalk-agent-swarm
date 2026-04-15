@@ -3,10 +3,17 @@ RAG pipeline orchestrator.
 Runs the full scrape → chunk → embed → store sequence.
 """
 
+import hashlib
 import logging
 from app.rag.scraper import scrape_all_urls
 from app.rag.chunker import split_documents
-from app.rag.vector_store import add_documents, get_document_count, reset_collection
+from app.rag.vector_store import (
+    add_documents,
+    delete_by_url,
+    get_document_count,
+    get_indexed_url_hashes,
+    reset_collection,
+)
 from app.config import INFINITEPAY_URLS
 
 # ---------------------------------------------------------------------------
@@ -37,23 +44,29 @@ _SEED_DOCUMENTS: list[dict] = [
 logger = logging.getLogger(__name__)
 
 
-def build_knowledge_base(force_rebuild: bool = False) -> int:
+def _content_hash(content: str) -> str:
+    """Stable per-URL fingerprint used by the incremental pipeline."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
+def _attach_hashes(documents: list[dict]) -> list[dict]:
+    """Computes + attaches `content_hash` to every scraped document."""
+    for d in documents:
+        d["content_hash"] = _content_hash(d.get("content", ""))
+    return documents
+
+
+def build_knowledge_base(force_rebuild: bool = False, incremental: bool = False) -> int:
+    """Builds (or refreshes) the vector-store knowledge base.
+
+    Modes:
+      * default — skip if already populated; full build when empty.
+      * force_rebuild — wipe everything and re-index from scratch.
+      * incremental — scrape, diff per-URL `content_hash` against the index,
+        only re-chunk + re-embed URLs whose content changed. Safe to run on a
+        populated KB; no-op for untouched URLs.
     """
-    Builds the vector store knowledge base from InfinitePay URLs.
-
-    Steps:
-        1. Check if knowledge base already exists (skip if not force_rebuild).
-        2. Scrape all InfinitePay pages.
-        3. Split scraped text into chunks.
-        4. Generate embeddings and store in ChromaDB.
-
-    Args:
-        force_rebuild: If True, wipes existing data before rebuilding.
-
-    Returns:
-        Total number of indexed document chunks.
-    """
-    if not force_rebuild and get_document_count() > 0:
+    if not force_rebuild and not incremental and get_document_count() > 0:
         count = get_document_count()
         logger.info("Knowledge base already populated (%d documents). Skipping build.", count)
         return count
@@ -62,7 +75,7 @@ def build_knowledge_base(force_rebuild: bool = False) -> int:
         logger.info("Force rebuild requested — clearing existing knowledge base.")
         reset_collection()
 
-    logger.info("=== Building Knowledge Base ===")
+    logger.info("=== Building Knowledge Base (incremental=%s) ===", incremental)
     logger.info("Step 1/3: Scraping %d URLs...", len(INFINITEPAY_URLS))
     documents = scrape_all_urls()
 
@@ -79,8 +92,34 @@ def build_knowledge_base(force_rebuild: bool = False) -> int:
     else:
         logger.info("All seed URLs already scraped — skipping seed injection.")
 
+    _attach_hashes(documents)
+
+    if incremental and not force_rebuild:
+        existing = get_indexed_url_hashes()
+        changed = [d for d in documents if existing.get(d["url"]) != d["content_hash"]]
+        unchanged = len(documents) - len(changed)
+        logger.info(
+            "Incremental diff: %d URL(s) changed, %d unchanged — will re-embed only changed.",
+            len(changed),
+            unchanged,
+        )
+        if not changed:
+            total = get_document_count()
+            logger.info("=== Knowledge Base unchanged: %d documents. ===", total)
+            return total
+        # Wipe stale chunks for each changed URL, then re-chunk + add.
+        for doc in changed:
+            removed = delete_by_url(doc["url"])
+            if removed:
+                logger.info("Deleted %d stale chunks for %s.", removed, doc["url"])
+        documents = changed
+
     logger.info("Step 2/3: Splitting %d documents into chunks...", len(documents))
     chunks = split_documents(documents)
+    # Propagate the per-URL hash down to every chunk so the metadata survives.
+    url_to_hash = {d["url"]: d["content_hash"] for d in documents}
+    for c in chunks:
+        c["content_hash"] = url_to_hash.get(c["url"], "")
 
     logger.info("Step 3/3: Indexing %d chunks into ChromaDB...", len(chunks))
     add_documents(chunks)

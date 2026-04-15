@@ -35,6 +35,14 @@ def main() -> None:
         action="store_true",
         help="Ignore scraping cache and re-scrape all URLs.",
     )
+    parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help=(
+            "Diff each URL's content_hash against the index and only re-embed "
+            "URLs whose content changed. Fastest refresh path once the KB is seeded."
+        ),
+    )
     args = parser.parse_args()
 
     validate_config()
@@ -47,8 +55,11 @@ def main() -> None:
             os.remove(cache_file)
             logger.info("Scraping cache cleared.")
 
-    logger.info("Starting knowledge base build (force_rebuild=%s)...", args.rebuild)
-    doc_count = build_knowledge_base(force_rebuild=args.rebuild)
+    logger.info(
+        "Starting knowledge base build (force_rebuild=%s, incremental=%s)...",
+        args.rebuild, args.incremental,
+    )
+    doc_count = build_knowledge_base(force_rebuild=args.rebuild, incremental=args.incremental)
 
     if doc_count > 0:
         logger.info("SUCCESS: Knowledge base built with %d document chunks.", doc_count)

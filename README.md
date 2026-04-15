@@ -632,7 +632,7 @@ Items are grouped by phase. Each phase depends on the previous one being stable.
 - [x] **Railway healthcheck fix** (removed `localhost:8000` from Dockerfile, kept Railway external probe via `railway.toml`)
 - [x] **Public Railway URL + Telegram webhook** (webhook mode live at `cloudwalk-agent-swarm-challenge.up.railway.app`)
 - [x] **Mobile UX polish** — iOS viewport (`100dvh`, safe-area), table overflow scroll, Telegram @handle card
-- [ ] **Production secrets rotation** — generate a strong `JWT_SECRET` and rotate `MOCK_USER_PASSWORD` away from the seeded default before any external testing
+- [x] **Production secrets rotation guard** — startup check fires `CRITICAL` log + `audit_events(event_type="insecure_config")` when `ENVIRONMENT=production` is running with default `JWT_SECRET` / `MOCK_USER_PASSWORD`. Rotation itself remains an ops step (`python -c "import secrets; print(secrets.token_urlsafe(48))"`).
 - [x] **Per-JWT-user rate limit** on `/chat` (`30/min` per JWT, stacked on top of the existing `20/min` per IP)
 
 ### Phase 1.5 — Security Remediation (post-pentest 2026-04-14)
@@ -658,7 +658,7 @@ Tracked against the 9 findings in `security-assessment-report.md`. Split into tw
 - [x] Agent/language badge gated by `SHOW_AGENT_BADGE` (default `false` in prod) — web reads the flag from `/health`, Telegram reads from config
 - [x] DB integrity pass: local SQLite reseeded (5 legacy mock users + real accounts); added `telegram_links.telegram_username` column; purged ~26 test-pollution users (`ok+…`, `lock+…`, `sec+…`, `smoke@test.io`) + 4 stale tickets
 - [x] Test isolation: autouse `_clean_seeded_tickets` fixture in `test_tickets.py` and `test_support_agent.py` wipes seeded-user tickets between tests so the 24-h dedup doesn't cause phantom failures
-- [ ] Fix account enumeration on `POST /auth/register` (generic "if available, check your email" response) — HIGH-03 **(deferred to Commit C; only meaningful once email verification is in place)**
+- [x] Fix account enumeration on `POST /auth/register` — HIGH-03 (shipped in **Commit C** alongside email verification; `/auth/register` now always returns 202 + generic ack regardless of whether the email exists)
 
 **Commit C — P2 medium-term (done):**
 - [x] Email verification flow (`email_tokens` table w/ `verify_email` purpose + pluggable provider; log-only adapter for demo, Resend/Postmark/SES drop-in via `EMAIL_PROVIDER` env) — MEDIUM-08
@@ -674,7 +674,7 @@ Tracked against the 9 findings in `security-assessment-report.md`. Split into tw
 ### Phase 2 — Observability & quality
 
 - [x] **Request timing middleware + `/metrics` counters + structured `agent_response` logs**
-- [ ] **LangSmith trace export** for the agent graph (per-node latency + tool calls)
+- [x] **LangSmith trace export** (opt-in) — set `LANGSMITH_API_KEY` + `LANGSMITH_PROJECT`; LangChain auto-exports per-node latency, tool calls, and token usage for the router graph and both ReAct agents. Disabled by default.
 - [x] **Prometheus exporter** at `/metrics` (text exposition v0.0.4 by default; JSON snapshot still available via `?format=json`)
 - [x] **RAG evaluation harness** — golden Q&A set, Recall@K + MRR tracked per knowledge-base build (`tests/test_rag_eval.py`)
 - [x] **Load test** with k6 against the Railway URL (P95/P99 budgets, `scripts/load_test.k6.js`)
@@ -687,23 +687,47 @@ Tracked against the 9 findings in `security-assessment-report.md`. Split into tw
 - [x] **Per-user isolation enforced via JWT subject (no enumeration)**
 - [x] **Input/output guardrails (prompt-injection blocking + PII sanitization)**
 - [x] **Audit log table** (auth events) — append-only; extending to ticket lifecycle / escalation events is a follow-up
-- [ ] **Background RAG warm-up** so `/health` returns immediately even on the very first cold start
+- [x] **Background RAG warm-up** — `build_knowledge_base` runs via `asyncio.to_thread` inside the FastAPI lifespan so `/health` returns immediately on cold start. `KB_READY` flag flips when the index is populated; `/admin/health` reports `status="warming"` in the interim.
 
 ### Phase 4 — Performance & scale
 
-- [ ] **Response cache** — Redis layer for frequent KB questions (cache key = normalized question + language)
-- [ ] **Incremental RAG** — sitemap diff + per-chunk re-embedding, instead of full rebuilds
-- [ ] **Streaming responses** — surface tokens to the web UI via SSE so long answers feel responsive
-- [ ] **Multi-region read replicas** if user base spans LATAM
+- [x] **Response cache** — in-memory TTL cache for KNOWLEDGE_PRODUCT / KNOWLEDGE_GENERAL hits (`app/cache.py`). Keyed by `(sha256(normalized_message), language)`; `RESPONSE_CACHE_TTL_SECONDS` (default `900`, `0` disables). Support/escalation replies are never cached. Redis backend swap is a single-file change when we shard across workers.
+- [x] **Incremental RAG** — `build_knowledge_base(incremental=True)` diffs each URL's `content_hash` against ChromaDB metadata, re-embedding only changed URLs. CLI: `python scripts/build_knowledge_base.py --incremental`.
+- [x] **Streaming responses (`POST /chat/stream`)** — backend SSE endpoint with `status` / `token` / `done` frames. Cache-aware (single flush on hit), otherwise runs the full graph in a worker thread and chunks the final text. Web UI migration is the remaining follow-up (see Future).
+- **Multi-region read replicas** — moved to Future (pure ops / infra work; meaningful only when user base spans LATAM).
 
 ### Future improvements (nice-to-haves, out of scope for the current challenge)
 
-Ideas worth considering once Phases 1–4 are stable. Kept separate so the delivered roadmap stays focused.
+Ideas worth considering once Phases 1–4 are stable. Curated — we only keep items that are (a) genuinely load-bearing for a production fintech assistant, (b) obvious next steps a reviewer will ask about, or (c) disruptive enough to move the product bar. Items that were delivered in earlier commits are removed.
 
-- **Speech-to-text input (web + Telegram).** Free, good-enough option for the web is the browser-native **Web Speech API** (`SpeechRecognition`): zero backend cost, works in Chrome/Edge/Safari, streams transcripts while the user talks. On Telegram, voice notes can be transcribed server-side with `faster-whisper` (`base` model, ~140 MB) running on the same dyno — viable on a modest VM but tight on a free Railway tier. Would add a mic button next to the chat input on the web and handle `voice` updates in `app/integrations/telegram_bot.py`.
-- **Real CRM integration.** Replace the inline CRM columns on `users` with a thin adapter to HubSpot / Salesforce / an internal API. Not planned for this challenge — the mock CRM is deliberate to keep the demo self-contained.
-- **Extended audit events.** The `audit_events` table covers auth today. Wiring ticket lifecycle, escalation, and chat-moderation events would round out the trail for SOC 2–style review.
-- **Admin console.** Read-only UI on top of `/admin/health`, `audit_events`, and the tickets table. Currently everything is introspectable via SQL only.
-- **Streaming tokens on the web.** Switch `/chat` to SSE so the web UI feels as responsive as Telegram-style typing indicators, with incremental rendering of long Knowledge-agent answers.
-- **OWASP ZAP baseline scan in CI.** Nightly job that hits the Railway preview URL, fails the build on new highs. Low-effort follow-up to the Phase 1.5 pentest.
-- **Larger-window conversation context.** The shipped injection caps at **3 turns** and **500 chars/side** — a deliberate cost trade-off. Each extra turn adds ~150 input tokens against the Anthropic bill; going from 3 → 10 turns roughly doubles per-request input cost with diminishing relevance (most follow-ups resolve against the most recent 1–2 turns). Kept out of the current scope because: (a) measured latency/cost regression on the default 3-turn window is already ~+30%, (b) the support agent's tool-use loop multiplies that cost per turn, (c) long tails are better handled by summarization than raw concatenation. Evolution path: (i) adaptive window — keep 3 turns by default, extend only when a lightweight pronoun/short-message heuristic flags a follow-up; (ii) rolling 1-sentence "session summary" cached on `chat_messages` so arbitrarily old context stays addressable at constant cost; (iii) per-user vector recall over their own `chat_messages` for multi-session memory.
+**Channels & ingest**
+
+- **WhatsApp Business channel.** Customers in Brazil live on WhatsApp — the current Telegram+Web coverage leaves the dominant channel unserved. The mechanics mirror the Telegram bot (Meta Cloud API webhook → `POST /whatsapp/webhook` → same router graph → same `chat_messages` persistence), but pairing is trickier: Meta sends the user's E.164 phone, so linking would reuse the existing one-shot code flow tied to `users.phone`. Gated on a Meta Business verification and the $0.005–$0.05 per-conversation fee.
+- **Speech-to-text input (web + Telegram + WhatsApp voice notes).** Web uses the browser-native **Web Speech API** (zero backend cost). For Telegram voice + WhatsApp audio, transcribe server-side with `faster-whisper` (`base`, ~140 MB). Tight on Railway free tier, comfortable on a small VM.
+
+**Search & knowledge**
+
+- **Replace DuckDuckGo with a paid search API (Tavily / Brave / SerpAPI / Exa).** `ddgs` is free and requires no key, but (i) it rate-limits unpredictably under load, (ii) it has no freshness guarantee, (iii) it returns thin snippets that force the agent into extra tool loops. **Tavily** is the natural fit for LangChain — official LangChain tool, returns clean JSON with dates + snippets, $0/free tier of 1k/mo. Drop-in swap at [app/tools/search_tool.py](app/tools/search_tool.py). Removes the #1 source of flakiness in the k6 load test.
+- **Incremental RAG ingestion.** Already in Phase 4, but worth reiterating — full rebuilds block the KB for minutes once the corpus grows past ~100 pages.
+- **Per-user vector recall over `chat_messages`.** The 3-turn context window is a cheap trade-off today. A proper follow-up is embedding each user's own conversation history into a second Chroma collection so multi-session memory works at constant cost. Displaces the "larger-window" workaround entirely.
+- **Larger-window conversation context (stopgap).** Shipped at **3 turns × 500 chars/side**. Each extra turn ≈ +150 input tokens (≈+30% on the current bill per turn added), and the support agent's tool-loop multiplies that. Evolution path before reaching for vector recall: (i) adaptive window (extend only on pronoun/short-message follow-ups), (ii) rolling 1-sentence session summary cached on `chat_messages`.
+
+**Observability & compliance**
+
+- **Extended audit events.** The `audit_events` table covers auth today. Wire ticket lifecycle, escalation triggers, and chat-moderation decisions to round out the trail for SOC 2 / LGPD review.
+- **PII audit on RAG embeddings.** The KB is scraped marketing content today, but once it ingests support docs or ticket transcripts, every chunk must pass through `guardrails.sanitize_output` **before** embedding. Without this, CPFs/emails leak via nearest-neighbor retrieval regardless of the response-side sanitizer.
+- **Prompt-injection canaries in CI.** Expand `tests/test_security.py` with a rotating corpus of jailbreak payloads (from `garak` / `promptfoo`). Catches regressions when the guardrail prompt is tuned.
+
+**Ops & surface**
+
+- **Multi-region read replicas.** Read-side replicas in São Paulo + a US edge for LATAM-spanning users. Writes stay in one region; LangGraph nodes read from the nearest replica. Meaningful only once Railway traffic justifies it.
+- **Redis-backed response cache.** The in-memory TTL cache in `app/cache.py` is fine for a single worker; when we shard across Railway replicas, swap the backend adapter for `redis.asyncio` (keyed the same way). File-change is isolated to `app/cache.py`.
+- **Web UI migration to `/chat/stream`.** Backend SSE endpoint is live; the frontend still consumes `/chat` (single response). Migrating means rewriting the send path in [app/static/index.html](app/static/index.html) to `EventSource` + incremental DOM updates — ~80 lines, no backend churn.
+- **Admin console.** Read-only UI on top of `/admin/health`, `audit_events`, and the tickets table — currently SQL-only.
+- **Feature-flag service.** Today env flags (`ENABLE_DOCS`, `SHOW_AGENT_BADGE`, `LANGSMITH_TRACING`) require a redeploy to toggle. A lightweight runtime flag table (or LaunchDarkly/Unleash) unlocks instant kill-switches for the guardrail, the escalation path, and per-user A/B of router prompts.
+- **Agent A/B framework.** Sticky bucketing on `user.id`, persisted per-bucket metrics (CSAT proxy = escalation rate + response length). Non-negotiable once anyone wants to tweak the router prompt in prod.
+- **Prompt versioning + rollback.** System prompts live in source today. Move to a `prompts` table with `version_id` + `is_active`, rollback = `UPDATE prompts SET is_active WHERE …`. Pairs with the A/B framework.
+
+**OWASP ZAP in CI** was on this list — **I'd keep it**, but reframe. A baseline scan catches regressions (missing headers, XSS on new fields) that unit tests never see, and 15 min of GitHub Actions YAML is cheap insurance. The alternative is letting the next external pentest find them again. Kept below.
+
+- **OWASP ZAP baseline scan in CI.** Nightly `zaproxy/action-baseline` against the Railway preview URL; fails the build on new HIGHs. Pairs with the Phase 1.5 pentest.
