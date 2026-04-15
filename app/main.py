@@ -106,6 +106,39 @@ class _Metrics:
                 for k, v in self._counters.items()
             ]
 
+    def prometheus(self) -> str:
+        """Render counters in Prometheus text exposition format (v0.0.4)."""
+        def esc(v: str) -> str:
+            return v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+        lines: list[str] = [
+            "# HELP http_requests_total Total HTTP requests received.",
+            "# TYPE http_requests_total counter",
+        ]
+        with self._lock:
+            counters = dict(self._counters)
+            latency_sum = dict(self._latency_sum)
+        for (method, path, status), count in counters.items():
+            labels = f'method="{esc(method)}",path="{esc(path)}",status="{status}"'
+            lines.append(f"http_requests_total{{{labels}}} {count}")
+        lines += [
+            "# HELP http_request_duration_seconds_sum Sum of request latencies in seconds.",
+            "# TYPE http_request_duration_seconds_sum counter",
+        ]
+        for key, total in latency_sum.items():
+            method, path, status = key
+            labels = f'method="{esc(method)}",path="{esc(path)}",status="{status}"'
+            lines.append(f"http_request_duration_seconds_sum{{{labels}}} {total}")
+        lines += [
+            "# HELP http_request_duration_seconds_count Observation count matching _sum.",
+            "# TYPE http_request_duration_seconds_count counter",
+        ]
+        for key, count in counters.items():
+            method, path, status = key
+            labels = f'method="{esc(method)}",path="{esc(path)}",status="{status}"'
+            lines.append(f"http_request_duration_seconds_count{{{labels}}} {count}")
+        return "\n".join(lines) + "\n"
+
 
 METRICS = _Metrics()
 
@@ -356,6 +389,12 @@ async def telegram_webhook(request: Request) -> JSONResponse:
 # ------------------------------------------------------------------ #
 
 @app.get("/metrics", include_in_schema=False)
-def metrics() -> JSONResponse:
-    """Returns in-memory request counters and average latencies per route."""
-    return JSONResponse({"requests": METRICS.snapshot()})
+def metrics(request: Request):
+    """Prometheus exposition (default) or JSON snapshot with ?format=json."""
+    if request.query_params.get("format") == "json":
+        return JSONResponse({"requests": METRICS.snapshot()})
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(
+        METRICS.prometheus(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )

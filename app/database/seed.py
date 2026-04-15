@@ -127,6 +127,7 @@ def seed_mock_users(db: Session) -> int:
             password_hash=password_hash,
             name=seed["name"],
             is_active=True,
+            email_verified=True,  # demo users are always ready for login
             lgpd_consent_at=now,
             created_at=now,
             account_status=seed["account_status"],

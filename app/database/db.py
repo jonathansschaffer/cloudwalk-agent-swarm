@@ -74,6 +74,12 @@ def _run_schema_patches() -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE",
     ]
+    # Opt-in one-shot backfill: set BACKFILL_EMAIL_VERIFIED=true once, deploy,
+    # then remove the env var. Useful to mark pre-existing users as verified
+    # after enabling the verify-on-login gate.
+    import os
+    if os.getenv("BACKFILL_EMAIL_VERIFIED", "").lower() == "true":
+        patches.append("UPDATE users SET email_verified=TRUE WHERE email_verified=FALSE")
     with engine.connect() as conn:
         for sql in patches:
             try:

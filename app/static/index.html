@@ -1012,6 +1012,10 @@
             ' Recarregue a página e tente novamente.');
           return;
         }
+        if (detail && typeof detail === 'object' && detail.error === 'email_not_verified') {
+          showError('loginError', detail.message || 'Confirme seu email antes de entrar.');
+          return;
+        }
         if (Array.isArray(detail)) detail = detail.map(d => d.msg).join(' ');
         showError('loginError', (typeof detail === 'string' ? detail : null) || 'Falha ao entrar.');
         return;
@@ -1071,7 +1075,17 @@
   function doLogout() {
     clearToken();
     currentUser = null;
+    // Scrub every per-user view so the next account that logs in on this
+    // browser never sees stale tickets/telegram state flashing before the
+    // API refetch completes.
     document.getElementById('messages').innerHTML = '';
+    const tv = document.getElementById('ticketsView');      if (tv) tv.innerHTML = '';
+    const tg = document.getElementById('telegramView');     if (tg) tg.innerHTML = '';
+    const ac = document.getElementById('accountView');      if (ac) { /* rendered from currentUser on switch, safe */ }
+    stopTelegramLinkPoller();
+    document.querySelectorAll('.nav-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.view === 'chat')
+    );
     showScreen('loginScreen');
   }
 
@@ -1101,6 +1115,7 @@
       renderUserBlock();
       renderAccountView();
       showScreen('mainScreen');
+      switchView('chat');  // always land on chat (scrolls to last message after loadHistory)
       await loadHistory();
       await checkHealth();
     } catch (e) {
@@ -1336,6 +1351,7 @@
           ticket_id: turn.ticket_id, escalated: turn.escalated, language: turn.language,
         }, ts);
       });
+      messagesEl.scrollTop = messagesEl.scrollHeight;
     } catch (e) {
       renderWelcomeCard();
     }

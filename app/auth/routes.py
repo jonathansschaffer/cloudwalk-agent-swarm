@@ -352,6 +352,19 @@ def login(request: Request, body: LoginIn, db: Session = Depends(get_db)) -> Tok
             audit.emit("auth.login.failure", ip=ip, email=body.email.lower())
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
+    if not user.email_verified:
+        audit.emit("auth.login.email_unverified", actor_user_id=user.id, ip=ip)
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "email_not_verified",
+                "message": (
+                    "Confirme seu email antes de entrar. Cheque sua caixa de "
+                    "entrada pelo link de ativação (ou a pasta de spam)."
+                ),
+            },
+        )
+
     if user.failed_login_attempts:
         user.failed_login_attempts = 0
         db.commit()
