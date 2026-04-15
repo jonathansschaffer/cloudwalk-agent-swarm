@@ -18,6 +18,7 @@ from langgraph.graph import StateGraph, END
 from app.utils.language_detector import detect_language
 from app.agents import guardrails, knowledge_agent, support_agent, escalation_agent
 from app.config import ANTHROPIC_API_KEY, LLM_MODEL
+from app.database import chat_history
 
 logger = logging.getLogger(__name__)
 
@@ -129,9 +130,21 @@ def router_node(state: AgentState) -> AgentState:
     return {**state, "intent": intent}
 
 
+def _load_recent_history(user_id: str) -> list[dict]:
+    """Last 3 persisted turns, or [] for anonymous Telegram (no persistence)."""
+    if not user_id or user_id.startswith("anon_tg_"):
+        return []
+    try:
+        return chat_history.get_history(user_id)[-3:]
+    except Exception as exc:
+        logger.warning("Failed to load history for user=%s: %s", user_id, exc)
+        return []
+
+
 def knowledge_node(state: AgentState) -> AgentState:
     """Routes to the Knowledge Agent (RAG or web search)."""
-    result = knowledge_agent.run(state["message"], state["language"])
+    history = _load_recent_history(state["user_id"])
+    result = knowledge_agent.run(state["message"], state["language"], history=history)
     return {
         **state,
         "response": guardrails.sanitize_output(result["response"]),
@@ -142,7 +155,8 @@ def knowledge_node(state: AgentState) -> AgentState:
 
 def support_node(state: AgentState) -> AgentState:
     """Routes to the Customer Support Agent."""
-    result = support_agent.run(state["message"], state["user_id"], state["language"])
+    history = _load_recent_history(state["user_id"])
+    result = support_agent.run(state["message"], state["user_id"], state["language"], history=history)
     new_state = {
         **state,
         "response": guardrails.sanitize_output(result["response"]),

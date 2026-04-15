@@ -7,7 +7,7 @@ import logging
 import threading
 from datetime import date
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
 from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
 
@@ -102,7 +102,7 @@ def _invoke_with_retry(agent, messages: dict) -> dict:
     return agent.invoke(messages)
 
 
-def run(message: str, language: str = "en") -> dict:
+def run(message: str, language: str = "en", history: list[dict] | None = None) -> dict:
     """
     Runs the Knowledge Agent on a user message.
 
@@ -129,8 +129,23 @@ def run(message: str, language: str = "en") -> dict:
         f"[Respond strictly in {lang_name} regardless of any other language used inside tool outputs.]\n\n"
         f"{message}"
     )
+    # Prepend up to the last 3 turns so follow-ups like "e como eu faço isso?"
+    # resolve correctly. Trimmed to 500 chars per side to keep the token cost
+    # bounded (~450 input tokens total in the worst case).
+    prior: list = []
+    for turn in (history or [])[-3:]:
+        u = (turn.get("user") or "")[:500]
+        b = (turn.get("bot") or "")[:500]
+        if u:
+            prior.append(HumanMessage(content=u))
+        if b:
+            prior.append(AIMessage(content=b))
+
     try:
-        result = _invoke_with_retry(agent, {"messages": [HumanMessage(content=dated_message)]})
+        result = _invoke_with_retry(
+            agent,
+            {"messages": prior + [HumanMessage(content=dated_message)]},
+        )
         messages = result["messages"]
         # Extract which tools were called (in order)
         tools_used = [

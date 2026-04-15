@@ -8,7 +8,7 @@ import re
 import threading
 from langchain_anthropic import ChatAnthropic
 from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.prebuilt import create_react_agent
 
 from app.config import ANTHROPIC_API_KEY, LLM_MODEL, LLM_MAX_TOKENS, LLM_TEMPERATURE
@@ -91,7 +91,7 @@ def _get_agent():
     return _agent
 
 
-def run(message: str, user_id: str, language: str = "en") -> dict:
+def run(message: str, user_id: str, language: str = "en", history: list[dict] | None = None) -> dict:
     """
     Runs the Customer Support Agent on a user message.
 
@@ -111,8 +111,20 @@ def run(message: str, user_id: str, language: str = "en") -> dict:
         f"Customer message: {message}"
     )
 
+    prior: list = []
+    for turn in (history or [])[-3:]:
+        u = (turn.get("user") or "")[:500]
+        b = (turn.get("bot") or "")[:500]
+        if u:
+            prior.append(HumanMessage(content=u))
+        if b:
+            prior.append(AIMessage(content=b))
+
     try:
-        result = _invoke_with_retry(agent, {"messages": [HumanMessage(content=full_input)]})
+        result = _invoke_with_retry(
+            agent,
+            {"messages": prior + [HumanMessage(content=full_input)]},
+        )
         response_text: str = result["messages"][-1].content
 
         # Check for escalation flag

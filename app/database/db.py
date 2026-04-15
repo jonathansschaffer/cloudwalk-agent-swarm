@@ -76,12 +76,6 @@ def _run_schema_patches() -> None:
         # legacy_id column removed — emails are the stable seed identifier now.
         "ALTER TABLE users DROP COLUMN IF EXISTS legacy_id",
     ]
-    # Opt-in one-shot backfill: set BACKFILL_EMAIL_VERIFIED=true once, deploy,
-    # then remove the env var. Useful to mark pre-existing users as verified
-    # after enabling the verify-on-login gate.
-    import os
-    if os.getenv("BACKFILL_EMAIL_VERIFIED", "").lower() == "true":
-        patches.append("UPDATE users SET email_verified=TRUE WHERE email_verified=FALSE")
     with engine.connect() as conn:
         for sql in patches:
             try:
