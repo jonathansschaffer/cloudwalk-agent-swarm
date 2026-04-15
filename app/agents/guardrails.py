@@ -104,9 +104,11 @@ def check_input(message: str, language: str = "en") -> dict:
         r"pretend.*(you are|to be)",
         r"repeat (everything|what)",
         # Obfuscation / encoding attempts
-        r"<\s*script",           # XSS attempt
-        r"&#x[0-9a-fA-F]+;",    # HTML entity obfuscation
-        r"base64",               # Encoded payload attempts
+        r"<\s*/?\s*[a-zA-Z][\w:-]*",   # any HTML-like tag (covers <script>, <svg>, <img>, </a>, ...)
+        r"&#x?[0-9a-fA-F]+;",            # HTML entity obfuscation (hex + decimal)
+        r"javascript\s*:",                # javascript: URL in markdown/links
+        r"\bon[a-z]+\s*=",                # inline event handlers (onerror=, onload=, ...)
+        r"base64",                        # Encoded payload attempts
         # Portuguese variants
         r"ignore (todas as |as )?instru",
         r"esqueça (tudo|suas instru)",

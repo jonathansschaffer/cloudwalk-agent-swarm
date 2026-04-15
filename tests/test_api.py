@@ -41,9 +41,10 @@ class TestHealthEndpoint:
         response = client.get("/health")
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] in ("ok", "degraded")
-        assert "knowledge_base_loaded" in data
-        assert "documents_indexed" in data
+        # MEDIUM-09: public /health is intentionally minimal. KB stats moved
+        # to authenticated /admin/health.
+        assert data["status"] == "ok"
+        assert "show_agent_badge" in data
 
 
 class TestKnowledgeProductQuestions:

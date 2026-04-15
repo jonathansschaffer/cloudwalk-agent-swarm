@@ -7,8 +7,25 @@ Run with:
 
 import pytest
 import json
+from app.database.db import SessionLocal
 from app.database.mock_users import get_account_status, get_recent_transactions, get_user
 from app.database.mock_tickets import create_ticket, get_ticket
+from app.database.models import Ticket, User
+
+
+@pytest.fixture(autouse=True)
+def _clean_seeded_tickets():
+    """Clear tickets for the seeded mock users before each test — prevents the
+    24h dedup window from turning every fresh `create_ticket` into a duplicate
+    of a ticket left behind by a previous test run."""
+    with SessionLocal() as db:
+        seeded_ids = {u.id for u in db.query(User).filter(User.legacy_id.isnot(None)).all()}
+        if seeded_ids:
+            db.query(Ticket).filter(Ticket.user_id.in_(seeded_ids)).delete(
+                synchronize_session=False
+            )
+            db.commit()
+    yield
 
 
 class TestMockUserDatabase:
@@ -55,7 +72,8 @@ class TestTicketSystem:
     def test_ticket_created_with_valid_id(self):
         ticket = create_ticket("client789", "Cannot make transfers", "high")
         assert ticket["ticket_id"].startswith("TKT-")
-        assert ticket["user_id"] == "client789"
+        # user_id is the resolved DB PK (integer), not the legacy slug
+        assert isinstance(ticket["user_id"], int)
         assert ticket["priority"] == "high"
         assert ticket["status"] == "open"
         assert "estimated_resolution" in ticket
@@ -71,10 +89,18 @@ class TestTicketSystem:
         assert ticket["priority"] == "medium"
 
     def test_all_priority_levels(self):
-        for priority in ["low", "medium", "high"]:
-            ticket = create_ticket("client789", "Test", priority)
-            assert ticket["priority"] == priority
-            assert "estimated_resolution" in ticket
+        # One fresh ticket per priority — clean between iterations because the
+        # 24h dedup would otherwise return the first ticket for the 2nd and 3rd.
+        with SessionLocal() as db:
+            seeded_ids = {u.id for u in db.query(User).filter(User.legacy_id.isnot(None)).all()}
+            for priority in ["low", "medium", "high"]:
+                db.query(Ticket).filter(Ticket.user_id.in_(seeded_ids)).delete(
+                    synchronize_session=False
+                )
+                db.commit()
+                ticket = create_ticket("client789", "Test", priority)
+                assert ticket["priority"] == priority
+                assert "estimated_resolution" in ticket
 
 
 class TestAccountTools:

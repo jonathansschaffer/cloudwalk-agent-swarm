@@ -38,6 +38,7 @@ from telegram.ext import (
 )
 
 from app.agents.router_agent import process_message
+from app.config import WEB_APP_URL
 from app.database.db import SessionLocal
 from app.database.models import TelegramLink, TelegramLinkCode, User
 from datetime import datetime, timezone
@@ -298,29 +299,29 @@ def _consume_link_code(code: str, telegram_user_id: int, telegram_username: str 
         return True, f"✅ Conta vinculada com sucesso a <b>{html.escape(user.name)}</b>."
 
 # Use HTML parse mode — more reliable than Markdown for messages with emojis
-_WELCOME_MESSAGE = textwrap.dedent("""
+_WELCOME_MESSAGE = textwrap.dedent(f"""
     👋 Olá! Sou o assistente da <b>InfinitePay</b>.
 
     Para conversar comigo aqui no Telegram, você precisa vincular sua conta InfinitePay primeiro:
 
-    1️⃣ Acesse o app web e faça login
-    2️⃣ Vá em "Vincular Telegram" e gere um código de 6 caracteres
+    1️⃣ Acesse o app web: <a href="{WEB_APP_URL}">{WEB_APP_URL}</a>
+    2️⃣ Faça login, vá em "Vincular Telegram" e gere um código de 6 caracteres
     3️⃣ Envie aqui: <code>/link SEU_CODIGO</code>
 
     Depois disso, é só perguntar — em português ou inglês.
     Use /help para exemplos.
 """).strip()
 
-_NOT_LINKED_MESSAGE = textwrap.dedent("""
+_NOT_LINKED_MESSAGE = textwrap.dedent(f"""
     🔒 Sua conta do Telegram ainda não está vinculada a uma conta InfinitePay.
 
     Para vincular:
-    1️⃣ Acesse o app web e faça login
+    1️⃣ Acesse o app web: <a href="{WEB_APP_URL}">{WEB_APP_URL}</a>
     2️⃣ Em "Vincular Telegram", gere um código
     3️⃣ Envie aqui: <code>/link SEU_CODIGO</code>
 """).strip()
 
-_HELP_MESSAGE = textwrap.dedent("""
+_HELP_MESSAGE = textwrap.dedent(f"""
     📋 <b>Exemplos de perguntas que posso responder:</b>
 
     💳 <b>Sobre InfinitePay:</b>
@@ -343,6 +344,8 @@ _HELP_MESSAGE = textwrap.dedent("""
     • "I need to speak with a human agent"
 
     <i>Basta digitar sua pergunta normalmente!</i>
+
+    🌐 App web: <a href="{WEB_APP_URL}">{WEB_APP_URL}</a>
 """).strip()
 
 
@@ -502,9 +505,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # then collapse runs of blank lines so the body stays tight.
     html_body = _normalize_blank_lines(_md_to_html(response_text))
 
-    agent_label = _AGENT_LABELS.get(agent_used, html.escape(agent_used))
-    lang_label = _LANGUAGE_LABELS.get(language, language.upper())
-    footer_lines = [f"— {agent_label} · {lang_label}"]
+    from app.config import SHOW_AGENT_BADGE
+
+    footer_lines: list[str] = []
+    if SHOW_AGENT_BADGE:
+        agent_label = _AGENT_LABELS.get(agent_used, html.escape(agent_used))
+        lang_label = _LANGUAGE_LABELS.get(language, language.upper())
+        footer_lines.append(f"— {agent_label} · {lang_label}")
 
     if ticket_id:
         footer_lines.append(f"🎫 Ticket: {html.escape(str(ticket_id))}")
@@ -512,7 +519,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if escalated and agent_used != "escalation_agent":
         footer_lines.append("⚠️ Esta conversa foi encaminhada para nossa equipe humana.")
 
-    full_message = html_body + "\n\n" + "\n".join(footer_lines)
+    full_message = html_body + ("\n\n" + "\n".join(footer_lines) if footer_lines else "")
 
     # Telegram has a 4096 character limit per message
     if len(full_message) > 4000:

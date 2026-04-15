@@ -145,7 +145,7 @@ The Knowledge Agent uses Retrieval-Augmented Generation (RAG) to answer question
 | Web Search | DuckDuckGo (ddgs) | Free, no API key required |
 | Language Detection | langdetect | Lightweight, detects PT-BR vs EN |
 | Telegram Bot | python-telegram-bot v21 | Native asyncio, most mature library |
-| Rate Limiting | slowapi | Per-IP request throttling (20 req/min) |
+| Rate Limiting | slowapi (X-Forwarded-For aware) | Per-IP throttling + account-level login lockout |
 | Retry Logic | tenacity | Exponential backoff on API failures |
 | Containerization | Docker + docker-compose | One-command deployment |
 
@@ -225,6 +225,8 @@ uvicorn app.main:app --reload
 | `SCRAPED_CACHE_PATH` | ❌ No | `./data/scraped_cache` | Cache for scraped content |
 | `COLLECTION_NAME` | ❌ No | `infinitepay_knowledge` | ChromaDB collection name |
 | `LOG_LEVEL` | ❌ No | `INFO` | Log verbosity (DEBUG / INFO / WARNING / ERROR) |
+| `ENABLE_DOCS` | ❌ No | `false` | Enable `/docs`, `/redoc`, `/openapi.json` (keep `false` in prod) |
+| `LOGIN_LOCKOUT_THRESHOLD` | ❌ No | `10` | Consecutive failed logins that lock an account |
 
 ---
 
@@ -558,7 +560,7 @@ A condensed log of the major iterations on the project, in order:
 
 ## Security Audit
 
-Snapshot of the security posture after the auth + persistence migration. Items marked **OK** are addressed in the current code; items marked **TODO** are tracked in the roadmap below.
+Snapshot of the security posture after the **2026-04-14 ethical pentest** (see `security-assessment-report.md`) and the subsequent Phase 1.5 remediation commit. Items marked **OK** are addressed in the current code; items marked **TODO** are tracked in the Production Roadmap → "Phase 1.5 — Security Remediation" below.
 
 | Risk                                      | Status | Mitigation                                                                                          |
 |-------------------------------------------|--------|------------------------------------------------------------------------------------------------------|
@@ -566,20 +568,48 @@ Snapshot of the security posture after the auth + persistence migration. Items m
 | Token forgery                             | OK     | JWT HS256 with `JWT_SECRET` from env (must be ≥ 32 random bytes in prod). Tokens carry `iat`/`exp`.  |
 | Cross-user data access                    | OK     | All authenticated endpoints derive `user_id` from the JWT subject — no path parameter is trusted.    |
 | User enumeration via login                | OK     | `POST /auth/login` returns the same generic 401 for unknown email and wrong password.                |
-| Brute-force login                         | OK     | `slowapi` rate limit (`5/minute` per IP) on `/auth/login` and `/auth/register`.                      |
+| User enumeration via registration         | OK     | `POST /auth/register` always returns `202` with a generic ack regardless of whether the email already exists (HIGH-03 fix, Phase 1.5 Commit C).      |
+| Stored XSS via profile fields             | OK     | `name` field rejects `<`, `>`, `&`, `"`, `\\`, `;`, `{}`, `[]`, `|`, backticks, event-handler chars — Unicode-aware whitelist with NFC normalization. |
+| Brute-force login (per-IP + per-account)  | OK     | `slowapi` (X-Forwarded-For aware) `5/min` per IP + **account lockout** after `LOGIN_LOCKOUT_THRESHOLD` (default 10) consecutive failures. |
+| Rate limiting for registration            | OK     | `5/min;20/hour` per IP on `POST /auth/register`.                                                     |
+| Rate limiting for Telegram code mint      | OK     | `10/min` per IP **plus** per-user throttle: at most one code every 30 s regardless of origin.        |
+| API reconnaissance (Swagger/OpenAPI)      | OK     | `/docs`, `/redoc`, `/openapi.json` disabled unless `ENABLE_DOCS=true` (dev/staging only).            |
+| HTML/JS injection via chat message        | OK     | Guardrail regex rejects any HTML tag (`<svg>`, `<img>`, `<script>`), `javascript:` URIs, inline `on*=` handlers, and HTML entities — no 500s on malformed input. |
 | Prompt injection / abusive input          | OK     | Input guardrail (regex + Claude classifier, EN/PT) before any agent runs. Output PII sanitization.   |
 | PII leakage in agent responses            | OK     | `guardrails.sanitize_output` strips CPF, card numbers, phone, and email patterns from every reply.   |
 | Session token transport                   | OK     | `Authorization: Bearer …` only; no cookies → no CSRF surface. CORS restricted via `ALLOWED_ORIGINS`. |
 | Clickjacking / MIME sniffing / XSS        | OK     | `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, strict `Content-Security-Policy`.        |
 | Telegram channel hijack                   | OK     | One Telegram account ↔ one App user; codes are single-use, 10-min TTL, A-Z0-9 (≈ 2 ⁱⁿ ³¹ entropy).  |
+| Fake escalation abuse                     | OK     | 24-h open-ticket dedup (`app/database/mock_tickets.py`) reuses the existing ticket instead of opening a new one — tighter than the 2/h the pentest asked for. |
+| Account creation abuse (no verification)  | OK     | Email-verification token (60-min TTL) issued on register; Cloudflare Turnstile required after `CAPTCHA_AFTER_FAILED_LOGINS` failures (MEDIUM-08 fix).   |
+| Health endpoint information disclosure    | OK     | Public `/health` returns `{"status":"ok","show_agent_badge":bool}`; KB size + flags now live at authenticated `/admin/health` (MEDIUM-09 fix).       |
 | LGPD right-to-erasure                     | OK     | `DELETE /auth/me` cascades through tickets, chat history, telegram link, transactions.               |
 | LGPD explicit consent                     | OK     | Registration is rejected unless `lgpd_consent_at` is set; consent timestamp persisted.               |
 | SQL injection                             | OK     | SQLAlchemy ORM parameterizes all queries; no raw SQL in app code.                                    |
-| DoS / Anthropic API exhaustion            | Partial| Per-IP rate limit (`20/min`) on `/chat`. Telegram serializes via single-thread executor. **TODO:** add per-JWT-user limit so a single authenticated user can't burn the IP budget for an entire NAT. |
+| DoS / Anthropic API exhaustion            | OK     | Stacked limits on `/chat`: `20/min` per IP **+** `30/min` per JWT (keyed by a hash of the bearer token). Telegram serializes calls through a single-threaded executor. |
 | Concurrent state race (transfer limit)   | Partial| Mock CRM only writes on ticket creation today, so no race in practice. **TODO:** when wired to a real CRM, wrap `transfer_limit_remaining` updates in a `SELECT … FOR UPDATE`. |
+| Missing security headers (HSTS, etc.)    | OK     | `SecurityHeadersMiddleware` sends `Referrer-Policy`, `Permissions-Policy`, CSP and — when the request reaches us over HTTPS (Railway edge or direct) — `Strict-Transport-Security: max-age=31536000; includeSubDomains; preload`. |
 | Secret rotation                           | TODO   | `JWT_SECRET` rotation invalidates all sessions instantly — design a key-id-aware decode path before going live. |
-| Audit log                                 | TODO   | `agent_response` and `http` logs capture latency + agent + status, but no append-only audit trail of auth events yet. |
-| HTTPS termination                         | TODO   | App speaks HTTP; production must terminate TLS at the platform proxy (Railway does this) and forward `X-Forwarded-Proto`. |
+| Audit log                                 | OK     | `audit_events` table (append-only) logs auth success/failure, captcha_failed, lockout_triggered, email_verified, unlock, account_deleted, telegram link/unlink. |
+| HTTPS termination                         | OK     | Railway terminates TLS at the edge proxy and forwards `X-Forwarded-Proto`; rate limiter uses `X-Forwarded-For` to see the real client IP. |
+
+### Pentest result summary (2026-04-14)
+
+| # | Finding | Pre-remediation severity | Status |
+|---|---|---|---|
+| CRITICAL-01 | Stored XSS via registration name field | Critical (6.1) | **Fixed** in Phase 1.5 — name validator rejects HTML chars |
+| CRITICAL-02 | Swagger/OpenAPI exposed in production | Critical (7.5) | **Fixed** in Phase 1.5 — `ENABLE_DOCS=false` by default |
+| HIGH-03     | Account enumeration via registration | High (5.3) | **Fixed** in Phase 1.5 Commit C — generic 202 ack on `/auth/register` |
+| HIGH-04     | Login brute-force mitigations | High (7.5) | **Fixed** in Phase 1.5 — XFF-aware per-IP + account lockout |
+| HIGH-05     | Telegram code generation throttle | High (6.5) | **Fixed** in Phase 1.5 — 30-s per-user throttle added |
+| HIGH-06     | HTML input → 500 on `/chat` | High (5.3) | **Fixed** in Phase 1.5 — broader guardrail patterns |
+| MEDIUM-07   | Fake escalation creates real tickets | Medium (4.3) | **Fixed** — 24-h per-user open-ticket dedup already in place |
+| MEDIUM-08   | No email verification / CAPTCHA | Medium (4.3) | **Fixed** in Phase 1.5 Commit C — email verification token + Turnstile (flag-gated) |
+| MEDIUM-09   | `/health` information disclosure | Medium (3.1) | **Fixed** in Phase 1.5 Commit C — slim public `/health`, details at `/admin/health` |
+
+**Score (self-assessed):** 6.5/10 pre-remediation → **~9/10** after Phase 1.5 Commits A + B → **~9.5/10** after Commit C (email verification, CAPTCHA, admin `/health`, audit log, Telegram self-service unlink).
+
+**OWASP alignment:** this project is tracked against the **OWASP Top 10** (A03 Injection, A05 Misconfiguration, A07 Authentication). OWASP is a framework, not a certification body — formal certifications that use OWASP as a technical base are ISO 27001, SOC 2 Type II, and PCI DSS. For this demo-stage project we use the Top 10 as a PR-review checklist and plan to run `OWASP ZAP` baseline scans in CI once Phase 1.5 lands.
 
 ### Concurrency analysis
 
@@ -598,9 +628,46 @@ Items are grouped by phase. Each phase depends on the previous one being stable.
 - [x] **JWT auth + LGPD-compliant registration**
 - [x] **Telegram account linking via one-shot code**
 - [x] **Railway healthcheck fix** (removed `localhost:8000` from Dockerfile, kept Railway external probe via `railway.toml`)
-- [ ] **Public Railway URL + Telegram webhook** (replace long polling once HTTPS endpoint is live; required for serverless-style deploys)
+- [x] **Public Railway URL + Telegram webhook** (webhook mode live at `cloudwalk-agent-swarm-challenge.up.railway.app`)
+- [x] **Mobile UX polish** — iOS viewport (`100dvh`, safe-area), table overflow scroll, Telegram @handle card
 - [ ] **Production secrets rotation** — generate a strong `JWT_SECRET` and rotate `MOCK_USER_PASSWORD` away from the seeded default before any external testing
-- [ ] **Per-JWT-user rate limit** on `/chat` (currently per-IP only)
+- [x] **Per-JWT-user rate limit** on `/chat` (`30/min` per JWT, stacked on top of the existing `20/min` per IP)
+
+### Phase 1.5 — Security Remediation (post-pentest 2026-04-14)
+
+Tracked against the 9 findings in `security-assessment-report.md`. Split into two commits so remediation ships in small, testable batches.
+
+**Commit A — P0 criticals (done):**
+- [x] Disable `/docs`, `/redoc`, `/openapi.json` in prod (`ENABLE_DOCS=false` by default) — CRITICAL-02
+- [x] Sanitize `name` field on registration (reject HTML/JS chars, NFC normalize, Unicode whitelist) — CRITICAL-01
+- [x] Broaden guardrail regex to catch any HTML tag, `javascript:` URIs, inline event handlers — HIGH-06 (no more 500s)
+- [x] Rate limiter honors `X-Forwarded-For` behind Railway edge proxy — precondition for HIGH-04/HIGH-05
+- [x] Account-level login lockout after `LOGIN_LOCKOUT_THRESHOLD` (default 10) consecutive failures — HIGH-04
+- [x] Per-user throttle on `POST /auth/telegram/code` (≤ 1 code / 30 s) — HIGH-05
+- [x] Tighter `POST /auth/register` rate limit (`5/min;20/hour`) — precondition for MEDIUM-08
+- [x] Regression tests: `tests/test_security.py` covers all of the above (16 cases)
+
+**Commit B — P1 sprint (done):**
+- [x] `Strict-Transport-Security: max-age=31536000; includeSubDomains; preload` emitted when the request is HTTPS (Railway edge, `X-Forwarded-Proto`) — Missing header from pentest
+- [x] Per-JWT-user `/chat` rate limit (`30/min`) stacked on top of the per-IP `20/min` — closes the shared-NAT bypass
+- [x] Escalation throttle confirmed via existing 24-h open-ticket dedup (`mock_tickets.create_ticket` returns the existing ticket with `is_duplicate=True`) — MEDIUM-07 satisfied
+- [x] Session-expiry UX: `apiFetch` intercepts every 401 → clears JWT → routes back to login; `loadTickets` swallows the `UNAUTHORIZED` error (no more blank "Falha ao carregar tickets" banner)
+- [x] Telegram bot: `/start`, `/help`, and the not-linked message include the web-app URL (`WEB_APP_URL` env, defaults to the Railway domain)
+- [x] Agent/language badge gated by `SHOW_AGENT_BADGE` (default `false` in prod) — web reads the flag from `/health`, Telegram reads from config
+- [x] DB integrity pass: local SQLite reseeded (5 legacy mock users + real accounts); added `telegram_links.telegram_username` column; purged ~26 test-pollution users (`ok+…`, `lock+…`, `sec+…`, `smoke@test.io`) + 4 stale tickets
+- [x] Test isolation: autouse `_clean_seeded_tickets` fixture in `test_tickets.py` and `test_support_agent.py` wipes seeded-user tickets between tests so the 24-h dedup doesn't cause phantom failures
+- [ ] Fix account enumeration on `POST /auth/register` (generic "if available, check your email" response) — HIGH-03 **(deferred to Commit C; only meaningful once email verification is in place)**
+
+**Commit C — P2 medium-term (done):**
+- [x] Email verification flow (`email_tokens` table w/ `verify_email` purpose + pluggable provider; log-only adapter for demo, Resend/Postmark/SES drop-in via `EMAIL_PROVIDER` env) — MEDIUM-08
+- [x] HIGH-03 enumeration fix: `/auth/register` always returns 202 + generic ack regardless of email existence
+- [x] Slim public `/health` → `{"status":"ok","show_agent_badge":bool}`; details at authenticated `/admin/health` (requires `user.is_admin`) — MEDIUM-09
+- [x] CAPTCHA (Cloudflare Turnstile) after `CAPTCHA_AFTER_FAILED_LOGINS` (default 3) — flag-gated via `TURNSTILE_SECRET_KEY`; `/auth/captcha-config` exposes the site key to the frontend
+- [x] Self-service account unlock via emailed token (`unlock_account` purpose, 30-min TTL) — completes the HIGH-04 lockout loop
+- [x] Append-only `audit_events` table (auth_success/failure, captcha_failed, lockout_triggered, account_deleted, telegram_linked/unlinked) — `app/audit.emit(...)` logs without blocking the request
+- [x] Language-detection bug fix: heuristic PT prefilter (accent regex + closed-class token sets) + 23 regression tests in `tests/test_language_detection.py`
+- [x] Telegram self-service unlink: `DELETE /auth/telegram` + button in the web UI (no need to delete account or contact support)
+- [x] Auto-refresh of the "Vincular Telegram" screen on link (4-s poll of `/auth/me` while the code is live) and on unlink
 
 ### Phase 2 — Observability & quality
 
@@ -616,8 +683,7 @@ Items are grouped by phase. Each phase depends on the previous one being stable.
 - [x] **In-memory stores migrated to PostgreSQL with cascade-deletion**
 - [x] **Per-user isolation enforced via JWT subject (no enumeration)**
 - [x] **Input/output guardrails (prompt-injection blocking + PII sanitization)**
-- [ ] **Audit log table** (auth events, ticket lifecycle, escalations) — append-only
-- [ ] **Real CRM integration** — replace the inline CRM columns on `users` with a thin adapter to HubSpot / Salesforce / internal API; add `SELECT … FOR UPDATE` around limit updates
+- [x] **Audit log table** (auth events) — append-only; extending to ticket lifecycle / escalation events is a follow-up
 - [ ] **Background RAG warm-up** so `/health` returns immediately even on the very first cold start
 
 ### Phase 4 — Performance & scale
@@ -626,3 +692,14 @@ Items are grouped by phase. Each phase depends on the previous one being stable.
 - [ ] **Incremental RAG** — sitemap diff + per-chunk re-embedding, instead of full rebuilds
 - [ ] **Streaming responses** — surface tokens to the web UI via SSE so long answers feel responsive
 - [ ] **Multi-region read replicas** if user base spans LATAM
+
+### Future improvements (nice-to-haves, out of scope for the current challenge)
+
+Ideas worth considering once Phases 1–4 are stable. Kept separate so the delivered roadmap stays focused.
+
+- **Speech-to-text input (web + Telegram).** Free, good-enough option for the web is the browser-native **Web Speech API** (`SpeechRecognition`): zero backend cost, works in Chrome/Edge/Safari, streams transcripts while the user talks. On Telegram, voice notes can be transcribed server-side with `faster-whisper` (`base` model, ~140 MB) running on the same dyno — viable on a modest VM but tight on a free Railway tier. Would add a mic button next to the chat input on the web and handle `voice` updates in `app/integrations/telegram_bot.py`.
+- **Real CRM integration.** Replace the inline CRM columns on `users` with a thin adapter to HubSpot / Salesforce / an internal API. Not planned for this challenge — the mock CRM is deliberate to keep the demo self-contained.
+- **Extended audit events.** The `audit_events` table covers auth today. Wiring ticket lifecycle, escalation, and chat-moderation events would round out the trail for SOC 2–style review.
+- **Admin console.** Read-only UI on top of `/admin/health`, `audit_events`, and the tickets table. Currently everything is introspectable via SQL only.
+- **Streaming tokens on the web.** Switch `/chat` to SSE so the web UI feels as responsive as Telegram-style typing indicators, with incremental rendering of long Knowledge-agent answers.
+- **OWASP ZAP baseline scan in CI.** Nightly job that hits the Railway preview URL, fails the build on new highs. Low-effort follow-up to the Phase 1.5 pentest.

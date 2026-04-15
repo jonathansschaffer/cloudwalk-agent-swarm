@@ -35,12 +35,13 @@ class TestVectorStore:
     """Tests for ChromaDB vector store (requires a populated knowledge base)."""
 
     def test_similarity_search_returns_list(self):
+        from app.config import TOP_K_RETRIEVAL
         from app.rag.vector_store import similarity_search, get_document_count
         if get_document_count() == 0:
             pytest.skip("Knowledge base is empty — run build_knowledge_base.py first.")
         results = similarity_search("maquininha fees")
         assert isinstance(results, list)
-        assert len(results) <= 5
+        assert len(results) <= TOP_K_RETRIEVAL
 
     def test_search_result_has_required_fields(self):
         from app.rag.vector_store import similarity_search, get_document_count

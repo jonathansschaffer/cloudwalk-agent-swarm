@@ -56,6 +56,14 @@ class User(Base):
     transfer_limit_remaining = Column(Float, nullable=False, default=1000.0)
     failed_login_attempts = Column(Integer, nullable=False, default=0)
 
+    # --- Admin / moderation ----------------------------------------------
+    is_admin = Column(Boolean, nullable=False, default=False)
+    # True once the user clicked the email-verification link. Login is still
+    # allowed when email_verified=False so existing seeded accounts and pre-flow
+    # registrations keep working — enforcement is a separate flag so we can
+    # ratchet it on when the email provider is wired in.
+    email_verified = Column(Boolean, nullable=False, default=False)
+
     transactions = relationship(
         "Transaction", back_populates="user",
         cascade="all, delete-orphan", passive_deletes=True,
@@ -130,6 +138,45 @@ class TelegramLink(Base):
     telegram_username = Column(String(64), nullable=True)  # @handle without the @, may be None
 
     user = relationship("User", back_populates="telegram_link")
+
+
+class EmailToken(Base):
+    """Opaque single-use tokens for email-driven flows.
+
+    Purposes:
+        * ``verify_email``    — emitted on registration; marks email_verified.
+        * ``unlock_account`` — emitted after account lockout; resets failed_login_attempts.
+        * ``password_reset`` — future, not yet wired.
+    """
+
+    __tablename__ = "email_tokens"
+
+    token = Column(String(64), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    purpose = Column(String(32), nullable=False, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class AuditEvent(Base):
+    """Append-only audit trail of security-relevant actions.
+
+    Rows are never mutated or deleted in app code. Retained for LGPD / SOC 2
+    investigation. `actor_user_id` is nullable for pre-auth events (failed
+    login against unknown email, registration, etc.).
+    """
+
+    __tablename__ = "audit_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, index=True)
+    event_type = Column(String(64), nullable=False, index=True)
+    actor_user_id = Column(Integer, nullable=True, index=True)
+    ip_address = Column(String(64), nullable=True)
+    # Freeform JSON-ish text blob — keep it a string to stay DB-portable
+    # (SQLite has no JSON column; Postgres does but we favor the LCD).
+    details = Column(Text, nullable=False, default="")
 
 
 class TelegramLinkCode(Base):

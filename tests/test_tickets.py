@@ -14,7 +14,27 @@ from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.database.db import SessionLocal
 from app.database.mock_tickets import create_ticket, find_open_ticket, list_user_tickets
+from app.database.models import Ticket, User
+
+
+@pytest.fixture(autouse=True)
+def _clean_seeded_tickets():
+    """Wipe any existing tickets for the seeded mock users before each test.
+
+    Tests in this module share a process-wide DB (dev SQLite). Without this
+    cleanup, a prior test's open ticket makes the next `create_ticket(...)`
+    return `is_duplicate=True` instead of the expected `False`.
+    """
+    with SessionLocal() as db:
+        seeded_ids = {u.id for u in db.query(User).filter(User.legacy_id.isnot(None)).all()}
+        if seeded_ids:
+            db.query(Ticket).filter(Ticket.user_id.in_(seeded_ids)).delete(
+                synchronize_session=False
+            )
+            db.commit()
+    yield
 
 
 # ---------------------------------------------------------------------------
@@ -78,9 +98,18 @@ class TestTicketsEndpoint:
     """Tests GET /tickets returns authenticated user's tickets."""
 
     def test_tickets_requires_auth(self):
-        with TestClient(app) as c:
-            resp = c.get("/tickets")
-        assert resp.status_code == 401
+        # test_api.py installs a global dependency_overrides entry for
+        # get_current_user that bypasses auth. Clear it here (and restore
+        # after) so this test sees the real auth behavior.
+        from app.auth.dependencies import get_current_user as _gcu
+        saved = app.dependency_overrides.pop(_gcu, None)
+        try:
+            with TestClient(app) as c:
+                resp = c.get("/tickets")
+            assert resp.status_code == 401
+        finally:
+            if saved is not None:
+                app.dependency_overrides[_gcu] = saved
 
     def test_tickets_returns_list_for_authenticated_user(self):
         """After login, /tickets returns a list (may be empty)."""

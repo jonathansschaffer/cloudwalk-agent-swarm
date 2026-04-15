@@ -883,9 +883,10 @@
         <h3>📲 Telegram vinculado</h3>
         <p>Sua conta já está vinculada ao Telegram.</p>
         <p id="telegramLinkedHandle" style="font-size: 18px; font-weight: 700; color: var(--green); margin: 12px 0;"></p>
-        <p style="font-size: 13px; color: var(--text-secondary);">
-          Para desvincular, exclua sua conta ou entre em contato com o suporte.
-        </p>
+        <div style="margin-top: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+          <button class="btn-secondary" style="width: auto;" onclick="unlinkTelegram()">Desvincular Telegram</button>
+          <span id="telegramUnlinkStatus" style="font-size: 12px; color: var(--text-secondary);"></span>
+        </div>
       </div>
       <!-- State B: not yet linked -->
       <div id="telegramUnlinkedCard" class="card hidden">
@@ -945,6 +946,7 @@
 
   let currentUser = null;
   let isLoading = false;
+  let showAgentBadge = false;
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -1003,7 +1005,15 @@
       });
       const data = await res.json();
       if (!res.ok) {
-        showError('loginError', data.detail || 'Falha ao entrar.');
+        let detail = data.detail;
+        // Turnstile challenge (403): backend returns {error:'captcha_required', message:'...'}
+        if (detail && typeof detail === 'object' && detail.error === 'captcha_required') {
+          showError('loginError', (detail.message || 'Verificação adicional necessária.') +
+            ' Recarregue a página e tente novamente.');
+          return;
+        }
+        if (Array.isArray(detail)) detail = detail.map(d => d.msg).join(' ');
+        showError('loginError', (typeof detail === 'string' ? detail : null) || 'Falha ao entrar.');
         return;
       }
       setToken(data.access_token);
@@ -1038,15 +1048,18 @@
           lgpd_consent: true,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok && res.status !== 202) {
         let detail = data.detail;
         if (Array.isArray(detail)) detail = detail.map(d => d.msg).join(' ');
         showError('registerError', detail || 'Falha ao criar conta.');
         return;
       }
-      setToken(data.access_token);
-      await bootMainApp();
+      // HIGH-03: /auth/register is enumeration-safe and always returns 202 with
+      // a generic message. The user must confirm their email before logging in.
+      alert(data.detail || 'Se o email estiver disponível, enviaremos instruções de confirmação em alguns instantes.');
+      document.getElementById('registerForm').reset();
+      showScreen('loginScreen');
     } catch (e) {
       showError('registerError', 'Erro de conexão. Tente novamente.');
     } finally {
@@ -1137,6 +1150,7 @@
       if (el) el.classList.toggle('hidden', v !== view);
     }
 
+    if (view !== 'telegram') stopTelegramLinkPoller();
     if (view === 'tickets') loadTickets();
     if (view === 'telegram') renderTelegramInitial();
     if (view === 'account') renderAccountView();
@@ -1161,6 +1175,7 @@
       const data = await res.json();
       renderTickets(data.tickets || []);
     } catch (e) {
+      if (e.message === 'UNAUTHORIZED') return;
       container.innerHTML = '<p style="color:#ff8888;font-size:13px;">Falha ao carregar tickets.</p>';
     }
   }
@@ -1195,6 +1210,26 @@
   // =========================================================
   // Telegram pairing
   // =========================================================
+  let telegramLinkPoller = null;
+
+  function stopTelegramLinkPoller() {
+    if (telegramLinkPoller) {
+      clearInterval(telegramLinkPoller);
+      telegramLinkPoller = null;
+    }
+  }
+
+  async function refreshCurrentUser() {
+    try {
+      const res = await apiFetch('/auth/me');
+      if (!res.ok) return false;
+      currentUser = await res.json();
+      renderUserBlock();
+      renderAccountView();
+      return true;
+    } catch (e) { return false; }
+  }
+
   function renderTelegramInitial() {
     const linked   = currentUser && currentUser.telegram_linked;
     const username = currentUser && currentUser.telegram_username;
@@ -1203,6 +1238,8 @@
     if (linked) {
       document.getElementById('telegramLinkedHandle').textContent =
         username ? `@${username}` : '(sem @username configurado no Telegram)';
+      document.getElementById('telegramUnlinkStatus').textContent = '';
+      stopTelegramLinkPoller();
     } else {
       document.getElementById('telegramCodeBox').classList.add('hidden');
       document.getElementById('telegramStatus').textContent = '';
@@ -1221,8 +1258,38 @@
       document.getElementById('telegramCodeExpiry').textContent =
         `Válido por ${data.expires_in_minutes} minutos. Envie /link ${data.code} ao bot.`;
       document.getElementById('telegramCodeBox').classList.remove('hidden');
-      document.getElementById('telegramStatus').textContent = 'Código gerado.';
+      document.getElementById('telegramStatus').textContent = 'Aguardando vinculação via Telegram...';
+
+      // Poll /auth/me until the user finishes /link <code> in Telegram.
+      // Stops automatically when linked, when they leave the view, or after ~15 min.
+      stopTelegramLinkPoller();
+      const startedAt = Date.now();
+      telegramLinkPoller = setInterval(async () => {
+        if (Date.now() - startedAt > 15 * 60 * 1000) { stopTelegramLinkPoller(); return; }
+        const ok = await refreshCurrentUser();
+        if (ok && currentUser && currentUser.telegram_linked) {
+          stopTelegramLinkPoller();
+          renderTelegramInitial();
+          document.getElementById('telegramStatus').textContent = 'Vinculado com sucesso.';
+        }
+      }, 4000);
     } catch (e) { /* redirected to login */ }
+  }
+
+  async function unlinkTelegram() {
+    if (!confirm('Desvincular sua conta do Telegram? Você pode vincular novamente quando quiser.')) return;
+    const statusEl = document.getElementById('telegramUnlinkStatus');
+    statusEl.textContent = 'Desvinculando...';
+    try {
+      const res = await apiFetch('/auth/telegram', { method: 'DELETE' });
+      if (!res.ok && res.status !== 204) {
+        statusEl.textContent = 'Falha ao desvincular.';
+        return;
+      }
+      await refreshCurrentUser();
+      renderTelegramInitial();
+      document.getElementById('telegramStatus').textContent = 'Telegram desvinculado.';
+    } catch (e) { /* redirected */ }
   }
 
   // =========================================================
@@ -1282,6 +1349,10 @@
       if (res.ok) {
         statusDot.className = 'status-dot online';
         statusText.textContent = 'Online';
+        try {
+          const data = await res.json();
+          showAgentBadge = !!data.show_agent_badge;
+        } catch {}
       } else {
         statusDot.className = 'status-dot error';
         statusText.textContent = 'Offline';
@@ -1377,8 +1448,7 @@
         ${ticketHtml}${escalatedHtml}
         <div class="message-footer">
           <span class="msg-time">${msgTime}</span>
-          <span class="agent-badge ${badgeClass}">${badgeLabel}</span>
-          <span class="msg-time">${langBadge}</span>
+          ${showAgentBadge ? `<span class="agent-badge ${badgeClass}">${badgeLabel}</span><span class="msg-time">${langBadge}</span>` : ''}
         </div>
       </div>`;
     messagesEl.appendChild(row);

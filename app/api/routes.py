@@ -18,6 +18,33 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
+
+def _client_ip(request: Request) -> str:
+    """Rate-limit key that honors X-Forwarded-For when behind a trusted proxy.
+
+    Railway / Cloudflare / NGINX append the real client IP as the first hop
+    of X-Forwarded-For. Using `get_remote_address` alone would see only the
+    proxy's IP and make all users share a single bucket.
+    """
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return get_remote_address(request)
+
+
+def _jwt_subject_key(request: Request) -> str:
+    """Rate-limit key derived from the JWT subject — guards against a single
+    authenticated user burning through the /chat quota from many IPs (shared
+    NAT, botnet, etc.). Falls back to the IP bucket when no token is present.
+    """
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+        if token:
+            import hashlib
+            return "jwt:" + hashlib.sha256(token.encode()).hexdigest()[:32]
+    return "ip:" + _client_ip(request)
+
 from app.agents.router_agent import process_message
 from app.database import chat_history, mock_tickets
 from app.database.models import User
@@ -28,8 +55,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Rate limiter instance — imported by main.py to attach to app state
-limiter = Limiter(key_func=get_remote_address)
+# Rate limiter instance — imported by main.py to attach to app state.
+# Uses `_client_ip` so per-IP limits apply to the real caller even when
+# running behind Railway's edge proxy (X-Forwarded-For is honored).
+limiter = Limiter(key_func=_client_ip)
 
 
 def _get_user_dep():
@@ -44,6 +73,7 @@ def _get_user_dep():
     summary="Send a message to the InfinitePay Assistant",
 )
 @limiter.limit("20/minute")
+@limiter.limit("30/minute", key_func=_jwt_subject_key)
 def chat(
     request: Request,
     body: ChatRequest,
@@ -106,20 +136,42 @@ def list_tickets(user: User = Depends(_get_user_dep())) -> dict:
     }
 
 
-@router.get("/health", response_model=HealthResponse, summary="Health check")
-def health() -> HealthResponse:
-    """Public — intentionally unauthenticated so load balancers can probe it."""
+@router.get("/health", summary="Public liveness probe")
+def health() -> dict:
+    """Public — minimal by design (MEDIUM-09). Load balancers only need to
+    know that the process is up, not how many docs are indexed or whether
+    internal flags are set. Details live on /admin/health.
+
+    Frontend note: the `show_agent_badge` flag used to live here; it moved to
+    `/admin/health` but is also surfaced on this endpoint because the web UI
+    reads it before the user logs in. Keep it minimal — nothing else leaks."""
+    from app.config import SHOW_AGENT_BADGE
+    return {"status": "ok", "show_agent_badge": SHOW_AGENT_BADGE}
+
+
+@router.get(
+    "/admin/health",
+    response_model=HealthResponse,
+    summary="Detailed health — admin only",
+)
+def admin_health(user: User = Depends(_get_user_dep())) -> HealthResponse:
+    """Requires `user.is_admin=True`. Exposes KB size, config flags, etc."""
+    from app.config import SHOW_AGENT_BADGE
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Admin privileges required.")
     try:
         doc_count = get_document_count()
         return HealthResponse(
             status="ok",
             knowledge_base_loaded=doc_count > 0,
             documents_indexed=doc_count,
+            show_agent_badge=SHOW_AGENT_BADGE,
         )
     except Exception as exc:
-        logger.error("Health check failed: %s", exc, exc_info=True)
+        logger.error("Admin health check failed: %s", exc, exc_info=True)
         return HealthResponse(
             status="degraded",
             knowledge_base_loaded=False,
             documents_indexed=0,
+            show_agent_badge=SHOW_AGENT_BADGE,
         )

@@ -38,6 +38,7 @@ from app.config import (
     TELEGRAM_WEBHOOK_URL,
     TELEGRAM_WEBHOOK_SECRET,
     ALLOWED_ORIGINS,
+    ENABLE_DOCS,
 )
 from app.api.routes import router, limiter
 from app.auth.routes import router as auth_router
@@ -119,6 +120,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        # HSTS: only meaningful over HTTPS. Railway / production terminates TLS
+        # at the edge, so forwards X-Forwarded-Proto=https. Skip the header in
+        # local dev (plain HTTP) to avoid poisoning the browser cache with a
+        # preload pin for 127.0.0.1.
+        if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=31536000; includeSubDomains; preload"
+            )
         # Allow scripts from self + cdn.jsdelivr.net (marked.js CDN used by frontend)
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
@@ -253,6 +262,9 @@ app = FastAPI(
     ),
     version="1.0.0",
     lifespan=lifespan,
+    docs_url="/docs" if ENABLE_DOCS else None,
+    redoc_url="/redoc" if ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if ENABLE_DOCS else None,
 )
 
 # Attach limiter to app state (required by slowapi)

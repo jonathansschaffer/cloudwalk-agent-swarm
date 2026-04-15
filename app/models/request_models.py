@@ -36,3 +36,4 @@ class HealthResponse(BaseModel):
     status: str
     knowledge_base_loaded: bool
     documents_indexed: int
+    show_agent_badge: bool = False

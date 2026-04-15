@@ -117,6 +117,37 @@ JWT_SECRET: str = os.getenv("JWT_SECRET", "dev-only-change-me-32chars-minimum-ok
 JWT_ALGORITHM: str = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 
+# Disable Swagger/OpenAPI in production to reduce reconnaissance surface.
+# Set ENABLE_DOCS=true only in dev/staging.
+ENABLE_DOCS: bool = os.getenv("ENABLE_DOCS", "false").lower() in {"1", "true", "yes"}
+
+# After this many consecutive failed logins, the account is locked until an
+# admin resets `users.failed_login_attempts` or the user resets their password.
+LOGIN_LOCKOUT_THRESHOLD: int = int(os.getenv("LOGIN_LOCKOUT_THRESHOLD", "10"))
+
+# Number of consecutive failed logins after which the /auth/login endpoint
+# requires a CAPTCHA token (Cloudflare Turnstile). Keep below
+# LOGIN_LOCKOUT_THRESHOLD so the user gets the challenge before the lockout.
+CAPTCHA_AFTER_FAILED_LOGINS: int = int(os.getenv("CAPTCHA_AFTER_FAILED_LOGINS", "3"))
+
+# Cloudflare Turnstile site/secret keys. Leave empty to disable the challenge
+# entirely (useful in tests + local dev). When set, a CAPTCHA token must be
+# passed as the `captcha_token` field on /auth/login once the failed-attempt
+# counter reaches CAPTCHA_AFTER_FAILED_LOGINS.
+TURNSTILE_SITE_KEY: str = os.getenv("TURNSTILE_SITE_KEY", "")
+TURNSTILE_SECRET_KEY: str = os.getenv("TURNSTILE_SECRET_KEY", "")
+
+# When true, chat responses include the agent+language badge in both web and
+# Telegram UIs. Default off in production — it leaks routing internals and is
+# noise for end users. Dev/debug: set SHOW_AGENT_BADGE=true.
+SHOW_AGENT_BADGE: bool = os.getenv("SHOW_AGENT_BADGE", "false").lower() in {"1", "true", "yes"}
+
+# Public URL of the web app — surfaced in Telegram /start, /help, and the
+# "account not linked" message so users know where to register/pair.
+WEB_APP_URL: str = os.getenv(
+    "WEB_APP_URL", "https://cloudwalk-agent-swarm-challenge.up.railway.app"
+).rstrip("/")
+
 # Shared password used to seed the 5 legacy mock users. Document-only secret —
 # these accounts are demo fixtures, not real customers. Prod deployments can
 # disable seeding by setting SEED_MOCK_USERS=false.
