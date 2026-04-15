@@ -675,10 +675,10 @@ Tracked against the 9 findings in `security-assessment-report.md`. Split into tw
 
 - [x] **Request timing middleware + `/metrics` counters + structured `agent_response` logs**
 - [ ] **LangSmith trace export** for the agent graph (per-node latency + tool calls)
-- [ ] **Prometheus exporter** at `/metrics` (current endpoint is JSON for quick inspection — switch to text format and scrape with Grafana Cloud free tier)
-- [ ] **RAG evaluation harness** — golden Q&A set, MRR / Recall@K tracked per knowledge-base build
-- [ ] **Load test** with k6 or Locust against the Railway URL (P95/P99 latency budgets)
-- [ ] **Cross-language retrieval audit** — the EN ↔ PT asymmetry on Brazilian-product queries (e.g. Maquininha pricing) is partially addressed by the multilingual embedding model and the explicit language directive, but a dedicated test fixture is still missing
+- [x] **Prometheus exporter** at `/metrics` (text exposition v0.0.4 by default; JSON snapshot still available via `?format=json`)
+- [x] **RAG evaluation harness** — golden Q&A set, Recall@K + MRR tracked per knowledge-base build (`tests/test_rag_eval.py`)
+- [x] **Load test** with k6 against the Railway URL (P95/P99 budgets, `scripts/load_test.k6.js`)
+- [x] **Cross-language retrieval audit** — EN↔PT pairs now have a parametrized fixture (`tests/test_rag_cross_language.py`) asserting overlap on `source_url`
 
 ### Phase 3 — Hardening & data
 
