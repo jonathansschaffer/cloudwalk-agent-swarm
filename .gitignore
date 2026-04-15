@@ -41,3 +41,14 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Local notes / presentation scripts (personal, not for the repo)
+PRESENTATION.md
+*.presentation.md
+
+# Claude memory / agent state
+.claude/
+
+# SQLite dev database
+data/app.db
+data/app.db.bak-*

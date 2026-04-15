@@ -1225,13 +1225,19 @@
   function doLogout() {
     clearToken();
     currentUser = null;
-    // Scrub every per-user view so the next account that logs in on this
-    // browser never sees stale tickets/telegram state flashing before the
-    // API refetch completes.
+    // Scrub dynamic views — clear only views whose content is appended at
+    // runtime. telegramView contains static card scaffolding (telegramLinkedCard /
+    // telegramUnlinkedCard) that renderTelegramInitial toggles; wiping it would
+    // destroy those elements and cause a crash on the next login.
     document.getElementById('messages').innerHTML = '';
-    const tv = document.getElementById('ticketsView');      if (tv) tv.innerHTML = '';
-    const tg = document.getElementById('telegramView');     if (tg) tg.innerHTML = '';
-    const ac = document.getElementById('accountView');      if (ac) { /* rendered from currentUser on switch, safe */ }
+    const tv = document.getElementById('ticketsView'); if (tv) tv.innerHTML = '';
+    // Reset telegram card visibility so stale "linked" state never flashes.
+    const linkedCard   = document.getElementById('telegramLinkedCard');
+    const unlinkedCard = document.getElementById('telegramUnlinkedCard');
+    if (linkedCard)   linkedCard.classList.add('hidden');
+    if (unlinkedCard) unlinkedCard.classList.add('hidden');
+    const codeBox = document.getElementById('telegramCodeBox');
+    if (codeBox) codeBox.classList.add('hidden');
     stopTelegramLinkPoller();
     document.querySelectorAll('.nav-btn').forEach(b =>
       b.classList.toggle('active', b.dataset.view === 'chat')
