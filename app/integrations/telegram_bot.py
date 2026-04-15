@@ -322,6 +322,19 @@ _NOT_LINKED_MESSAGE = textwrap.dedent(f"""
     3️⃣ Envie aqui: <code>/link SEU_CODIGO</code>
 """).strip()
 
+# Returned when an unlinked user asks a question that needs account context
+# (support/escalation). Product/general questions are answered anonymously
+# without this nudge.
+_LINK_FOR_SUPPORT_MESSAGE = textwrap.dedent(f"""
+    Posso responder dúvidas gerais sobre a InfinitePay aqui mesmo, sem vínculo.
+    Mas para atendimento sobre a <b>sua conta</b> (transferências, saldo,
+    acesso, abertura de chamado) preciso identificar quem é você primeiro:
+
+    1️⃣ Acesse <a href="{WEB_APP_URL}">{WEB_APP_URL}</a>
+    2️⃣ Em "Vincular Telegram", gere um código
+    3️⃣ Envie aqui: <code>/link SEU_CODIGO</code>
+""").strip()
+
 _HELP_MESSAGE = textwrap.dedent(f"""
     📋 <b>Exemplos de perguntas que posso responder:</b>
 
@@ -452,11 +465,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     linked_user_id = _resolve_linked_user(telegram_user_id)
     if linked_user_id is None:
-        logger.info("[%s] REJECTED unlinked telegram_user=%s", msg_id, telegram_user_id)
-        await _safe_reply(update, _NOT_LINKED_MESSAGE, parse_mode=ParseMode.HTML, msg_id=msg_id)
-        return
-
-    user_id = str(linked_user_id)
+        # Unlinked Telegram accounts may still ask knowledge questions — but
+        # anything that needs account context (support/escalation) is rejected
+        # with a link nudge. We classify once here and reuse the result inside
+        # process_message via a pseudo user_id that won't resolve in the DB
+        # (so no history is persisted and support tools short-circuit on the
+        # "user not found" path).
+        from app.agents.router_agent import _classify_intent
+        try:
+            pre_intent = _classify_intent(user_text)
+        except Exception as exc:
+            logger.warning("[%s] pre-classify failed: %s", msg_id, exc)
+            pre_intent = "CUSTOMER_SUPPORT"  # fail-closed: demand linking
+        if pre_intent not in ("KNOWLEDGE_PRODUCT", "KNOWLEDGE_GENERAL"):
+            logger.info(
+                "[%s] REJECTED unlinked telegram_user=%s (intent=%s)",
+                msg_id, telegram_user_id, pre_intent,
+            )
+            await _safe_reply(update, _LINK_FOR_SUPPORT_MESSAGE, parse_mode=ParseMode.HTML, msg_id=msg_id)
+            return
+        # Anonymous knowledge path: synthetic id that will not resolve in the
+        # users table → append_turn silently skips, no PII stored for guests.
+        user_id = f"anon_tg_{telegram_user_id}"
+        logger.info("[%s] anonymous knowledge answer to tg=%s", msg_id, telegram_user_id)
+    else:
+        user_id = str(linked_user_id)
     logger.info("[%s] RECEIVED user=%s message='%s'", msg_id, user_id, user_text[:80])
 
     # Show "typing..." indicator and keep refreshing it every 4s while processing
