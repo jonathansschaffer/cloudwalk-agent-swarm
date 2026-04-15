@@ -42,11 +42,6 @@ class User(Base):
     lgpd_consent_at = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
-    # --- Legacy slug — matches the old hard-coded IDs (client789 etc)  ----
-    # Used only so the seeded demo accounts remain addressable by their
-    # original id in tests and scripts. Null for user-registered accounts.
-    legacy_id = Column(String(64), unique=True, nullable=True, index=True)
-
     # --- CRM profile ------------------------------------------------------
     account_status = Column(String(32), nullable=False, default="active")
     kyc_verified = Column(Boolean, nullable=False, default=False)

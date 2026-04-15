@@ -19,10 +19,10 @@ from app.database.models import User
 
 
 def _resolve_user(db, user_id: str) -> Optional[User]:
-    """Accepts a numeric DB id ('42') or a legacy slug ('client789')."""
+    """Accepts a numeric DB id ('42') or an email ('carlos.andrade@infinitepay.test')."""
     if user_id.isdigit():
         return db.query(User).filter(User.id == int(user_id)).one_or_none()
-    return db.query(User).filter(User.legacy_id == user_id).one_or_none()
+    return db.query(User).filter(User.email == user_id.lower()).one_or_none()
 
 
 def get_user(user_id: str) -> Optional[dict]:

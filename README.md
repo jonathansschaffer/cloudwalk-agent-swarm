@@ -384,15 +384,17 @@ curl -X POST http://localhost:8000/chat \
 
 ## Mock Test Users (CRM)
 
-The system includes 5 simulated users to demonstrate different support scenarios:
+The system includes 5 simulated users to demonstrate different support scenarios. They are seeded idempotently on every startup and come pre-verified (`email_verified=true`) so they can log in without going through the email flow.
 
-| User ID | Name | Status | Test scenario |
+| Email | Name | Status | Test scenario |
 |---|---|---|---|
-| `client789` | Carlos Andrade | ✅ Active | Healthy account — product questions or transfers |
-| `user_002` | Maria Souza | 🔴 Suspended | KYC not verified, 6 failed logins → ticket created |
-| `user_003` | João Silva | 🟡 Pending KYC | New account, identity verification pending |
-| `user_004` | Ana Lima | 🟡 Active | Enterprise plan, daily transfer limit exhausted |
-| `user_005` | Pedro Costa | 🟠 Active | 2 failed logins, recent failed transaction |
+| `carlos.andrade@infinitepay.test` | Carlos Andrade | ✅ Active | Healthy account — product questions or transfers |
+| `maria.souza@infinitepay.test` | Maria Souza | 🔴 Suspended | KYC not verified, 6 failed logins → ticket created |
+| `joao.silva@infinitepay.test` | João Silva | 🟡 Pending KYC | New account, identity verification pending |
+| `ana.lima@infinitepay.test` | Ana Lima | 🟡 Active | Enterprise plan, daily transfer limit exhausted |
+| `pedro.costa@infinitepay.test` | Pedro Costa | 🟠 Active | 2 failed logins, recent failed transaction |
+
+**Password:** shared across all 5 accounts and read from the `MOCK_USER_PASSWORD` env var at startup (default in `.env.example`). It is deliberately **not** printed in this README — see `.env.example` or your Railway variables panel. Rotate it away from the default before any external testing. Accounts use the `.test` TLD (IANA special-use) so the emails are never deliverable — they exist purely for local/demo use.
 
 ---
 
@@ -703,3 +705,4 @@ Ideas worth considering once Phases 1–4 are stable. Kept separate so the deliv
 - **Admin console.** Read-only UI on top of `/admin/health`, `audit_events`, and the tickets table. Currently everything is introspectable via SQL only.
 - **Streaming tokens on the web.** Switch `/chat` to SSE so the web UI feels as responsive as Telegram-style typing indicators, with incremental rendering of long Knowledge-agent answers.
 - **OWASP ZAP baseline scan in CI.** Nightly job that hits the Railway preview URL, fails the build on new highs. Low-effort follow-up to the Phase 1.5 pentest.
+- **Conversation-history context injection (last 3 turns).** Inject the last 3 turns of `chat_messages` (same `user_id`) into each agent call so follow-ups like *"e como eu faço isso?"* resolve correctly. **Deferred purely on cost:** +~400 input tokens per request against the Anthropic bill (≈+30% on current average), which isn't worth it at demo scale but is trivially worth it in production. Implementation sketch: in `app/agents/router_agent.process_message`, before invoking each specialized agent, load `chat_history.get_history(user_id)[-3:]` and pass as `messages` with `role=user/assistant` alternating. Evolution path: (a) cap at 3 turns only for follow-ups (cheap heuristic: short message + pronoun), (b) summarize older turns into a 1-sentence "session summary" cached on `chat_messages`, (c) upgrade to a proper vector recall over the user's own history for long conversations.

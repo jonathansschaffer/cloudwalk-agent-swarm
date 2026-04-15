@@ -19,7 +19,9 @@ def _clean_seeded_tickets():
     24h dedup window from turning every fresh `create_ticket` into a duplicate
     of a ticket left behind by a previous test run."""
     with SessionLocal() as db:
-        seeded_ids = {u.id for u in db.query(User).filter(User.legacy_id.isnot(None)).all()}
+        seeded_ids = {
+            u.id for u in db.query(User).filter(User.email.endswith("@infinitepay.test")).all()
+        }
         if seeded_ids:
             db.query(Ticket).filter(Ticket.user_id.in_(seeded_ids)).delete(
                 synchronize_session=False
@@ -32,7 +34,7 @@ class TestMockUserDatabase:
     """Tests for the mock user database functions."""
 
     def test_known_user_found(self):
-        result = get_account_status("client789")
+        result = get_account_status("carlos.andrade@infinitepay.test")
         assert result["found"] is True
         assert result["name"] == "Carlos Andrade"
         assert result["account_status"] == "active"
@@ -42,27 +44,27 @@ class TestMockUserDatabase:
         assert result["found"] is False
 
     def test_suspended_user_has_hints(self):
-        result = get_account_status("user_002")
+        result = get_account_status("maria.souza@infinitepay.test")
         assert result["account_status"] == "suspended"
         assert len(result["diagnostic_hints"]) > 0
 
     def test_high_failed_logins_flagged(self):
-        result = get_account_status("user_002")
+        result = get_account_status("maria.souza@infinitepay.test")
         hints = result["diagnostic_hints"]
         assert any("login" in h.lower() or "locked" in h.lower() for h in hints)
 
     def test_zero_transfer_limit_flagged(self):
-        result = get_account_status("user_002")
+        result = get_account_status("maria.souza@infinitepay.test")
         hints = result["diagnostic_hints"]
         assert any("limit" in h.lower() for h in hints)
 
     def test_transactions_returned_correctly(self):
-        result = get_recent_transactions("client789", limit=5)
+        result = get_recent_transactions("carlos.andrade@infinitepay.test", limit=5)
         assert result["found"] is True
         assert isinstance(result["transactions"], list)
 
     def test_limit_respected(self):
-        result = get_recent_transactions("client789", limit=2)
+        result = get_recent_transactions("carlos.andrade@infinitepay.test", limit=2)
         assert len(result["transactions"]) <= 2
 
 
@@ -70,7 +72,7 @@ class TestTicketSystem:
     """Tests for the mock ticketing system."""
 
     def test_ticket_created_with_valid_id(self):
-        ticket = create_ticket("client789", "Cannot make transfers", "high")
+        ticket = create_ticket("carlos.andrade@infinitepay.test", "Cannot make transfers", "high")
         assert ticket["ticket_id"].startswith("TKT-")
         # user_id is the resolved DB PK (integer), not the legacy slug
         assert isinstance(ticket["user_id"], int)
@@ -79,26 +81,28 @@ class TestTicketSystem:
         assert "estimated_resolution" in ticket
 
     def test_ticket_retrievable(self):
-        ticket = create_ticket("client789", "Test issue", "medium")
+        ticket = create_ticket("carlos.andrade@infinitepay.test", "Test issue", "medium")
         retrieved = get_ticket(ticket["ticket_id"])
         assert retrieved is not None
         assert retrieved["ticket_id"] == ticket["ticket_id"]
 
     def test_invalid_priority_defaults_to_medium(self):
-        ticket = create_ticket("client789", "Test", "urgent")  # invalid
+        ticket = create_ticket("carlos.andrade@infinitepay.test", "Test", "urgent")  # invalid
         assert ticket["priority"] == "medium"
 
     def test_all_priority_levels(self):
         # One fresh ticket per priority — clean between iterations because the
         # 24h dedup would otherwise return the first ticket for the 2nd and 3rd.
         with SessionLocal() as db:
-            seeded_ids = {u.id for u in db.query(User).filter(User.legacy_id.isnot(None)).all()}
+            seeded_ids = {
+            u.id for u in db.query(User).filter(User.email.endswith("@infinitepay.test")).all()
+        }
             for priority in ["low", "medium", "high"]:
                 db.query(Ticket).filter(Ticket.user_id.in_(seeded_ids)).delete(
                     synchronize_session=False
                 )
                 db.commit()
-                ticket = create_ticket("client789", "Test", priority)
+                ticket = create_ticket("carlos.andrade@infinitepay.test", "Test", priority)
                 assert ticket["priority"] == priority
                 assert "estimated_resolution" in ticket
 
@@ -108,20 +112,20 @@ class TestAccountTools:
 
     def test_lookup_account_status_tool(self):
         from app.tools.account_tools import lookup_account_status
-        result = lookup_account_status.invoke("client789")
+        result = lookup_account_status.invoke("carlos.andrade@infinitepay.test")
         data = json.loads(result)
         assert data["found"] is True
 
     def test_get_transaction_history_tool(self):
         from app.tools.account_tools import get_transaction_history
-        result = get_transaction_history.invoke({"user_id": "client789", "limit": 3})
+        result = get_transaction_history.invoke({"user_id": "carlos.andrade@infinitepay.test", "limit": 3})
         data = json.loads(result)
         assert "transactions" in data
 
     def test_create_support_ticket_tool(self):
         from app.tools.account_tools import create_support_ticket
         result = create_support_ticket.invoke({
-            "user_id": "client789",
+            "user_id": "carlos.andrade@infinitepay.test",
             "issue": "Cannot access account",
             "priority": "high"
         })

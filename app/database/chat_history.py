@@ -18,10 +18,12 @@ MAX_HISTORY_PER_USER = 100  # maximum turns returned per user
 
 
 def _resolve_user_id(db, user_id_str: str) -> Optional[int]:
+    # DB id form — fast path.
     if user_id_str.isdigit():
         exists = db.query(User.id).filter(User.id == int(user_id_str)).scalar()
         return int(exists) if exists is not None else None
-    user = db.query(User).filter(User.legacy_id == user_id_str).one_or_none()
+    # Email form — kept so tests and scripts can address seeded users by email.
+    user = db.query(User).filter(User.email == user_id_str.lower()).one_or_none()
     return user.id if user else None
 
 

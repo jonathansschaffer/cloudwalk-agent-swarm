@@ -5,7 +5,7 @@ Each seed user keeps its original CRM profile so test scripts and automated
 tests continue to work, but now authentication is required. Passwords are
 the same for all seed accounts (`MOCK_USER_PASSWORD`, default `Test123!`).
 
-Idempotent: if a seed user already exists (by legacy_id), it is skipped.
+Idempotent: if a seed user already exists (matched by email), it is skipped.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 
 _SEED_USERS: list[dict] = [
     {
-        "legacy_id": "client789",
         "email": "carlos.andrade@infinitepay.test",
         "name": "Carlos Andrade",
         "account_status": "active",
@@ -44,7 +43,6 @@ _SEED_USERS: list[dict] = [
         ],
     },
     {
-        "legacy_id": "user_002",
         "email": "maria.souza@infinitepay.test",
         "name": "Maria Souza",
         "account_status": "suspended",
@@ -57,7 +55,6 @@ _SEED_USERS: list[dict] = [
         "transactions": [],
     },
     {
-        "legacy_id": "user_003",
         "email": "joao.silva@infinitepay.test",
         "name": "João Silva",
         "account_status": "pending_kyc",
@@ -70,7 +67,6 @@ _SEED_USERS: list[dict] = [
         "transactions": [],
     },
     {
-        "legacy_id": "user_004",
         "email": "ana.lima@infinitepay.test",
         "name": "Ana Lima",
         "account_status": "active",
@@ -87,7 +83,6 @@ _SEED_USERS: list[dict] = [
         ],
     },
     {
-        "legacy_id": "user_005",
         "email": "pedro.costa@infinitepay.test",
         "name": "Pedro Costa",
         "account_status": "active",
@@ -117,12 +112,11 @@ def seed_mock_users(db: Session) -> int:
     inserted = 0
 
     for seed in _SEED_USERS:
-        existing = db.query(User).filter(User.legacy_id == seed["legacy_id"]).one_or_none()
+        existing = db.query(User).filter(User.email == seed["email"]).one_or_none()
         if existing is not None:
             continue
 
         user = User(
-            legacy_id=seed["legacy_id"],
             email=seed["email"],
             password_hash=password_hash,
             name=seed["name"],

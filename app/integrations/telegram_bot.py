@@ -38,6 +38,7 @@ from telegram.ext import (
 )
 
 from app.agents.router_agent import process_message
+from app.database import chat_history
 from app.config import WEB_APP_URL
 from app.database.db import SessionLocal
 from app.database.models import TelegramLink, TelegramLinkCode, User
@@ -500,6 +501,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     ticket_id = state.get("ticket_id")
     escalated = state.get("escalated", False)
     language = state.get("language", "en")
+
+    # Persist the turn — same contract as the web route. Without this call,
+    # Telegram conversations never reach chat_messages and /history omits
+    # everything the user sent via the bot.
+    try:
+        chat_history.append_turn(
+            user_id=user_id,
+            user_message=user_text,
+            bot_response=response_text,
+            agent_used=agent_used,
+            intent=state.get("intent", ""),
+            ticket_id=ticket_id,
+            escalated=escalated,
+            language=language,
+        )
+    except Exception as exc:
+        logger.warning("[%s] Failed to persist Telegram turn: %s", msg_id, exc)
 
     # Convert Markdown to Telegram HTML so bold, headers, tables render properly,
     # then collapse runs of blank lines so the body stays tight.

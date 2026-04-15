@@ -73,6 +73,8 @@ def _run_schema_patches() -> None:
         # → seed crashes → /health never comes up → Railway healthcheck fails).
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE",
+        # legacy_id column removed — emails are the stable seed identifier now.
+        "ALTER TABLE users DROP COLUMN IF EXISTS legacy_id",
     ]
     # Opt-in one-shot backfill: set BACKFILL_EMAIL_VERIFIED=true once, deploy,
     # then remove the env var. Useful to mark pre-existing users as verified

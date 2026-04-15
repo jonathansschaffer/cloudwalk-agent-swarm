@@ -81,8 +81,7 @@ def chat(
 ) -> ChatResponse:
     """Processes a user message through the InfinitePay Assistant."""
     try:
-        # user_id fed into the agent graph is the DB id; legacy_id resolution
-        # still works for the seeded demo accounts.
+        # user_id fed into the agent graph is the DB id.
         agent_user_id = str(user.id)
 
         state = process_message(

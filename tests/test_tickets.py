@@ -28,7 +28,9 @@ def _clean_seeded_tickets():
     return `is_duplicate=True` instead of the expected `False`.
     """
     with SessionLocal() as db:
-        seeded_ids = {u.id for u in db.query(User).filter(User.legacy_id.isnot(None)).all()}
+        seeded_ids = {
+            u.id for u in db.query(User).filter(User.email.endswith("@infinitepay.test")).all()
+        }
         if seeded_ids:
             db.query(Ticket).filter(Ticket.user_id.in_(seeded_ids)).delete(
                 synchronize_session=False
@@ -70,14 +72,14 @@ class TestTicketDeduplication:
         call within 24h should return is_duplicate=True with the same ticket_id.
         """
         # Use the seeded user (must exist in DB)
-        first = create_ticket("client789", "Test escalation issue A", "high")
+        first = create_ticket("carlos.andrade@infinitepay.test", "Test escalation issue A", "high")
         if first.get("status") == "error":
             pytest.skip("client789 not seeded — run the server once to seed the DB")
 
         assert first.get("is_duplicate") is False
         first_ticket_id = first["ticket_id"]
 
-        second = create_ticket("client789", "Same user escalating again", "high")
+        second = create_ticket("carlos.andrade@infinitepay.test", "Same user escalating again", "high")
         assert second.get("is_duplicate") is True
         assert second["ticket_id"] == first_ticket_id
 
@@ -88,10 +90,10 @@ class TestTicketDeduplication:
         so this test seeds its own ticket instead of relying on ordering with
         a sibling test.
         """
-        created = create_ticket("client789", "Find-existing check", "medium")
+        created = create_ticket("carlos.andrade@infinitepay.test", "Find-existing check", "medium")
         if created.get("status") == "error":
             pytest.skip("client789 not seeded — run the server once to seed the DB")
-        existing = find_open_ticket("client789")
+        existing = find_open_ticket("carlos.andrade@infinitepay.test")
         assert existing is not None, "create_ticket did not persist an open ticket"
         assert existing["status"] == "open"
         assert existing["ticket_id"] == created["ticket_id"]

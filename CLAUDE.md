@@ -57,8 +57,8 @@ To add an agent, add a node function in `router_agent.py` and wire it into the `
 
 **Persistence (PostgreSQL via SQLAlchemy 2.0; SQLite fallback for local dev):**
 - Schema lives in [app/database/models.py](app/database/models.py): `users` (auth identity + inline CRM profile + LGPD consent), `transactions`, `tickets`, `chat_messages`, `telegram_links`, `telegram_link_codes`. All FKs declared `ON DELETE CASCADE` so `DELETE /auth/me` truly erases everything (LGPD right-to-erasure).
-- [app/database/chat_history.py](app/database/chat_history.py), [app/database/mock_tickets.py](app/database/mock_tickets.py), and [app/database/mock_users.py](app/database/mock_users.py) are now thin DB-backed services that accept either the DB id (`"42"`) or the legacy slug (`"client789"`) — `_resolve_user_id` handles both.
-- The 5 demo fixtures used by every support scenario are seeded idempotently by [app/database/seed.py](app/database/seed.py) on every startup: `client789` (active), `user_002` (suspended), `user_003` (pending KYC), `user_004` (limit exhausted), `user_005` (risk signals). All share `MOCK_USER_PASSWORD` (default `Test123!`). Tests and `scripts/test_agents.py` depend on these legacy IDs.
+- [app/database/chat_history.py](app/database/chat_history.py), [app/database/mock_tickets.py](app/database/mock_tickets.py), and [app/database/mock_users.py](app/database/mock_users.py) are thin DB-backed services that accept either the DB id (`"42"`) or the user's email (`"carlos.andrade@infinitepay.test"`) — `_resolve_user_id` handles both.
+- The 5 demo fixtures used by every support scenario are seeded idempotently by [app/database/seed.py](app/database/seed.py) on every startup (keyed by email): Carlos Andrade (active), Maria Souza (suspended), João Silva (pending KYC), Ana Lima (limit exhausted), Pedro Costa (risk signals). All share `MOCK_USER_PASSWORD` (default `Test123!`). Tests and `scripts/test_agents.py` address them by the `.test` email.
 
 **Authentication ([app/auth/](app/auth/)):**
 - All routes except `GET /health` and `GET /` (frontend) require a valid bearer token.
