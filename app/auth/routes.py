@@ -134,6 +134,7 @@ class UserOut(BaseModel):
     lgpd_consent_at: datetime
     telegram_linked: bool
     telegram_username: str | None = None  # @handle (without @) if linked, else None
+    is_admin: bool = False
 
     @classmethod
     def from_user(cls, user: User) -> "UserOut":
@@ -149,6 +150,7 @@ class UserOut(BaseModel):
             lgpd_consent_at=user.lgpd_consent_at,
             telegram_linked=link is not None,
             telegram_username=link.telegram_username if link else None,
+            is_admin=bool(getattr(user, "is_admin", False)),
         )
 
 

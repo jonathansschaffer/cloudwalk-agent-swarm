@@ -408,17 +408,27 @@ curl -X POST http://localhost:8000/chat \
 
 ## Mock Test Users (CRM)
 
-The system includes 5 simulated users to demonstrate different support scenarios. They are seeded idempotently on every startup and come pre-verified (`email_verified=true`) so they can log in without going through the email flow.
+The system includes 6 simulated users to demonstrate different support scenarios. They are seeded idempotently on every startup and come pre-verified (`email_verified=true`) so they can log in without going through the email flow.
 
 | Email | Name | Status | Test scenario |
 |---|---|---|---|
+| `admin@infinitepay.test` | Admin InfinitePay | 🛠️ Admin | Unlocks the **Admin** sidebar entry and `/admin/*` routes |
 | `carlos.andrade@infinitepay.test` | Carlos Andrade | ✅ Active | Healthy account — product questions or transfers |
 | `maria.souza@infinitepay.test` | Maria Souza | 🔴 Suspended | KYC not verified, 6 failed logins → ticket created |
 | `joao.silva@infinitepay.test` | João Silva | 🟡 Pending KYC | New account, identity verification pending |
 | `ana.lima@infinitepay.test` | Ana Lima | 🟡 Active | Enterprise plan, daily transfer limit exhausted |
 | `pedro.costa@infinitepay.test` | Pedro Costa | 🟠 Active | 2 failed logins, recent failed transaction |
 
-**Password:** shared across all 5 accounts and read from the `MOCK_USER_PASSWORD` env var at startup (default in `.env.example`). It is deliberately **not** printed in this README — see `.env.example` or your Railway variables panel. Rotate it away from the default before any external testing. Accounts use the `.test` TLD (IANA special-use) so the emails are never deliverable — they exist purely for local/demo use.
+**Password:** shared across all 6 accounts and read from the `MOCK_USER_PASSWORD` env var at startup. The value lives only in environment variables — it is **not** stored in the repository, the README, or application logs. A startup safety check emits a `CRITICAL INSECURE CONFIG` log line whenever `ENVIRONMENT=production` is running with the known-weak dev default, so the guard trips automatically if the password is ever forgotten in Railway. Demo credentials for reviewers are shared privately (e.g. application portal or direct message), never committed to Git. Accounts use the `.test` TLD (IANA special-use) so the emails are never deliverable — they exist purely for local/demo use.
+
+### Admin panel
+
+Logging in as `admin@infinitepay.test` adds a **🛠️ Admin** entry to the sidebar that surfaces:
+- **Response-cache stats** (`GET /admin/cache`) + a one-click flush (`POST /admin/cache/clear`).
+- **Knowledge-base status** (`GET /admin/health`) + a background rebuild trigger (`POST /admin/kb/rebuild`).
+- **Recent tickets across all users** (`GET /admin/tickets?limit=25`) — useful for reviewing what the escalation agent is producing.
+
+All five endpoints require `user.is_admin=True`; every other account gets a 403. To promote an existing user, update the row directly: `UPDATE users SET is_admin = TRUE WHERE email = '…'`.
 
 ---
 

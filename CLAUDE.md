@@ -26,7 +26,7 @@ python scripts/test_agents.py                                 # manual end-to-en
 ```
 
 **Required env:** `ANTHROPIC_API_KEY`, `JWT_SECRET` (≥ 32 random bytes in production).
-**Optional env:** `TELEGRAM_BOT_TOKEN` (bot silently disabled if absent), `DATABASE_URL` (defaults to local SQLite at `data/app.db`; use `postgresql+psycopg2://…` in prod), `MOCK_USER_PASSWORD` (default `Test123!`), `SEED_MOCK_USERS` (default `true`), `ALLOWED_ORIGINS`, `CHROMA_DB_PATH`, `COLLECTION_NAME`, `ENVIRONMENT` (set to `production` on Railway so the startup secrets-guard pages on defaults), `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` (opt-in tracing; LangChain auto-exports on set).
+**Optional env:** `TELEGRAM_BOT_TOKEN` (bot silently disabled if absent), `DATABASE_URL` (defaults to local SQLite at `data/app.db`; use `postgresql+psycopg2://…` in prod), `MOCK_USER_PASSWORD` (shared password for the 6 seeded demo accounts — dev default is weak on purpose so the startup guard flags it in production; rotate on Railway before sharing the URL externally), `SEED_MOCK_USERS` (default `true`), `ALLOWED_ORIGINS`, `CHROMA_DB_PATH`, `COLLECTION_NAME`, `ENVIRONMENT` (set to `production` on Railway so the startup secrets-guard pages on defaults), `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` (opt-in tracing; LangChain auto-exports on set).
 
 **Telegram modes** (mutually exclusive — pick one per environment):
 - **Webhook (Railway/prod):** set `TELEGRAM_WEBHOOK_URL=https://your-app.railway.app`. Bot registers `POST /telegram/webhook` with Telegram on startup and returns immediately — Railway healthcheck succeeds. Optionally set `TELEGRAM_WEBHOOK_SECRET` (any 256-char alphanumeric string) to authenticate incoming Telegram requests.
@@ -59,7 +59,15 @@ To add an agent, add a node function in `router_agent.py` and wire it into the `
 **Persistence (PostgreSQL via SQLAlchemy 2.0; SQLite fallback for local dev):**
 - Schema lives in [app/database/models.py](app/database/models.py): `users` (auth identity + inline CRM profile + LGPD consent), `transactions`, `tickets`, `chat_messages`, `telegram_links`, `telegram_link_codes`. All FKs declared `ON DELETE CASCADE` so `DELETE /auth/me` truly erases everything (LGPD right-to-erasure).
 - [app/database/chat_history.py](app/database/chat_history.py), [app/database/mock_tickets.py](app/database/mock_tickets.py), and [app/database/mock_users.py](app/database/mock_users.py) are thin DB-backed services that accept either the DB id (`"42"`) or the user's email (`"carlos.andrade@infinitepay.test"`) — `_resolve_user_id` handles both.
-- The 5 demo fixtures used by every support scenario are seeded idempotently by [app/database/seed.py](app/database/seed.py) on every startup (keyed by email): Carlos Andrade (active), Maria Souza (suspended), João Silva (pending KYC), Ana Lima (limit exhausted), Pedro Costa (risk signals). All share `MOCK_USER_PASSWORD` (default `Test123!`). Tests and `scripts/test_agents.py` address them by the `.test` email.
+- The 6 demo fixtures used by every support scenario are seeded idempotently by [app/database/seed.py](app/database/seed.py) on every startup (keyed by email): `admin@infinitepay.test` (`is_admin=True` — unlocks the Admin panel + `/admin/*` routes), Carlos Andrade (active), Maria Souza (suspended), João Silva (pending KYC), Ana Lima (limit exhausted), Pedro Costa (risk signals). All share `MOCK_USER_PASSWORD` (value lives only in env vars, never in code/docs). Tests and `scripts/test_agents.py` address them by the `.test` email.
+
+**Admin surface ([app/api/routes.py](app/api/routes.py) — gated by `user.is_admin`):**
+- `GET /admin/health` — KB size, warm-up flag, `SHOW_AGENT_BADGE`.
+- `GET /admin/tickets?limit=N` — recent tickets across all users.
+- `GET /admin/cache` + `POST /admin/cache/clear` — response-cache stats and flush.
+- `POST /admin/kb/rebuild` — schedules a full RAG rebuild in a background thread; returns immediately.
+
+The web UI conditionally renders an "Admin" sidebar entry ([app/static/index.html](app/static/index.html)) when `/auth/me` returns `is_admin=true`. There is no in-app promotion — add new admins via SQL (`UPDATE users SET is_admin = TRUE WHERE email = '…'`) or extend `_SEED_USERS`.
 
 **Authentication ([app/auth/](app/auth/)):**
 - All routes except `GET /health` and `GET /` (frontend) require a valid bearer token.

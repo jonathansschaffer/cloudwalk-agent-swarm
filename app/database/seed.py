@@ -2,8 +2,9 @@
 Seeds the 5 legacy mock users (client789, user_002..005) on first boot.
 
 Each seed user keeps its original CRM profile so test scripts and automated
-tests continue to work, but now authentication is required. Passwords are
-the same for all seed accounts (`MOCK_USER_PASSWORD`, default `Test123!`).
+tests continue to work, but now authentication is required. All seed accounts
+share the same password, read from the `MOCK_USER_PASSWORD` env var (never
+logged — rotate it on Railway before sharing the URL externally).
 
 Idempotent: if a seed user already exists (matched by email), it is skipped.
 """
@@ -23,6 +24,19 @@ logger = logging.getLogger(__name__)
 
 
 _SEED_USERS: list[dict] = [
+    {
+        "email": "admin@infinitepay.test",
+        "name": "Admin InfinitePay",
+        "account_status": "active",
+        "kyc_verified": True,
+        "plan": "InfinitePay Internal",
+        "member_since": "2023-01-01",
+        "transfer_limit_daily": 0.00,
+        "transfer_limit_remaining": 0.00,
+        "failed_login_attempts": 0,
+        "is_admin": True,
+        "transactions": [],
+    },
     {
         "email": "carlos.andrade@infinitepay.test",
         "name": "Carlos Andrade",
@@ -131,6 +145,7 @@ def seed_mock_users(db: Session) -> int:
             transfer_limit_daily=seed["transfer_limit_daily"],
             transfer_limit_remaining=seed["transfer_limit_remaining"],
             failed_login_attempts=seed["failed_login_attempts"],
+            is_admin=seed.get("is_admin", False),
         )
         db.add(user)
         db.flush()  # assigns user.id
@@ -142,5 +157,5 @@ def seed_mock_users(db: Session) -> int:
 
     db.commit()
     if inserted:
-        logger.info("Seeded %d mock users (password='%s').", inserted, MOCK_USER_PASSWORD)
+        logger.info("Seeded %d mock users.", inserted)
     return inserted

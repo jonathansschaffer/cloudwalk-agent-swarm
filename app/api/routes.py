@@ -287,6 +287,11 @@ def health() -> dict:
     return {"status": "ok", "show_agent_badge": SHOW_AGENT_BADGE}
 
 
+def _require_admin(user: User) -> None:
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Admin privileges required.")
+
+
 @router.get(
     "/admin/health",
     response_model=HealthResponse,
@@ -295,8 +300,7 @@ def health() -> dict:
 def admin_health(user: User = Depends(_get_user_dep())) -> HealthResponse:
     """Requires `user.is_admin=True`. Exposes KB size, config flags, etc."""
     from app.config import SHOW_AGENT_BADGE
-    if not getattr(user, "is_admin", False):
-        raise HTTPException(status_code=403, detail="Admin privileges required.")
+    _require_admin(user)
     try:
         # Prefer the cached warm-up flag so cold starts report "degraded" honestly
         # instead of hitting Chroma before it's ready.
@@ -317,3 +321,72 @@ def admin_health(user: User = Depends(_get_user_dep())) -> HealthResponse:
             documents_indexed=0,
             show_agent_badge=SHOW_AGENT_BADGE,
         )
+
+
+@router.get("/admin/tickets", summary="Recent tickets across all users — admin only")
+def admin_tickets(
+    limit: int = 25,
+    user: User = Depends(_get_user_dep()),
+) -> dict:
+    _require_admin(user)
+    from app.database.db import SessionLocal
+    from app.database.models import Ticket, User as UserModel
+
+    limit = max(1, min(int(limit or 25), 100))
+    with SessionLocal() as db:
+        rows = (
+            db.query(Ticket, UserModel.email)
+            .join(UserModel, UserModel.id == Ticket.user_id)
+            .order_by(Ticket.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        items = [
+            {
+                "ticket_id": t.id,
+                "user_email": email,
+                "issue": t.issue,
+                "priority": t.priority,
+                "status": t.status,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "estimated_resolution": t.estimated_resolution,
+            }
+            for t, email in rows
+        ]
+    return {"count": len(items), "tickets": items}
+
+
+@router.get("/admin/cache", summary="Response-cache stats — admin only")
+def admin_cache_stats(user: User = Depends(_get_user_dep())) -> dict:
+    _require_admin(user)
+    return response_cache.stats()
+
+
+@router.post("/admin/cache/clear", summary="Flush the response cache — admin only")
+def admin_cache_clear(user: User = Depends(_get_user_dep())) -> dict:
+    _require_admin(user)
+    response_cache.clear()
+    logger.info("Response cache cleared by admin user_id=%s", user.id)
+    return {"status": "cleared"}
+
+
+@router.post("/admin/kb/rebuild", summary="Rebuild the RAG knowledge base — admin only")
+def admin_kb_rebuild(user: User = Depends(_get_user_dep())) -> dict:
+    """Triggers a full rebuild in a background thread. Returns immediately."""
+    _require_admin(user)
+    import threading
+    from app.rag.pipeline import build_knowledge_base
+    from app import main as _main
+
+    def _worker() -> None:
+        try:
+            _main.KB_READY = False
+            count = build_knowledge_base(force_rebuild=True)
+            _main.KB_READY = count > 0
+            logger.info("Admin-triggered KB rebuild finished (docs=%d)", count)
+        except Exception as exc:
+            logger.error("Admin-triggered KB rebuild failed: %s", exc, exc_info=True)
+
+    threading.Thread(target=_worker, name="kb-rebuild", daemon=True).start()
+    logger.info("KB rebuild scheduled by admin user_id=%s", user.id)
+    return {"status": "scheduled"}

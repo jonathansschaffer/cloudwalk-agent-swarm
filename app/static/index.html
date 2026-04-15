@@ -848,6 +848,7 @@
       <button class="nav-btn"        data-view="tickets"  onclick="switchView('tickets')"> <span class="nav-icon">🎫</span> Meus Tickets</button>
       <button class="nav-btn"        data-view="telegram" onclick="switchView('telegram')"><span class="nav-icon">📲</span> Vincular Telegram</button>
       <button class="nav-btn"        data-view="account"  onclick="switchView('account')"> <span class="nav-icon">⚙️</span> Conta & LGPD</button>
+      <button class="nav-btn hidden" data-view="admin"    id="adminNavBtn" onclick="switchView('admin')"><span class="nav-icon">🛠️</span> Admin</button>
     </nav>
     <div class="sidebar-content"></div>
     <div class="user-block">
@@ -923,6 +924,41 @@
           <div class="code-display" id="telegramCode">——————</div>
           <div class="code-meta" id="telegramCodeExpiry">Válido por 10 minutos</div>
         </div>
+      </div>
+    </div>
+
+    <!-- Admin view (visible only to users with is_admin=true) -->
+    <div id="adminView" class="panel hidden">
+      <div class="card">
+        <h3>🛠️ Painel Administrativo</h3>
+        <p style="color: var(--text-secondary); font-size: 13px;">
+          Visível somente para usuários com <code>is_admin=true</code>. Use com cuidado —
+          rebuild do índice RAG re-processa todas as páginas de conhecimento (~1 min).
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>📦 Response Cache</h3>
+        <p id="adminCacheStats" style="color: var(--text-secondary); font-size: 13px;">Carregando…</p>
+        <div style="margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap;">
+          <button class="btn-secondary" style="width: auto;" onclick="adminReloadCache()">Atualizar</button>
+          <button class="btn-secondary" style="width: auto;" onclick="adminClearCache()">Limpar cache</button>
+          <span id="adminCacheStatus" style="font-size: 12px; color: var(--text-secondary);"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>📚 Knowledge Base</h3>
+        <p id="adminKbStats" style="color: var(--text-secondary); font-size: 13px;">Carregando…</p>
+        <div style="margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap;">
+          <button class="btn-secondary" style="width: auto;" onclick="adminRebuildKb()">Rebuild index</button>
+          <span id="adminKbStatus" style="font-size: 12px; color: var(--text-secondary);"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>🎫 Tickets recentes (todos os usuários)</h3>
+        <div id="adminTicketsList" style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">Carregando…</div>
       </div>
     </div>
 
@@ -1244,6 +1280,8 @@
     document.getElementById('userName').textContent = name;
     document.getElementById('userEmail').textContent = currentUser.email;
     document.getElementById('userInitial').textContent = (name || '?').charAt(0).toUpperCase();
+    const adminBtn = document.getElementById('adminNavBtn');
+    if (adminBtn) adminBtn.classList.toggle('hidden', !currentUser.is_admin);
   }
 
   function renderAccountView() {
@@ -1262,7 +1300,7 @@
   // =========================================================
   // View switching
   // =========================================================
-  const VIEW_TITLES = { chat: 'Chat', tickets: 'Meus Tickets', telegram: 'Vincular Telegram', account: 'Conta & LGPD' };
+  const VIEW_TITLES = { chat: 'Chat', tickets: 'Meus Tickets', telegram: 'Vincular Telegram', account: 'Conta & LGPD', admin: 'Admin' };
 
   function switchView(view) {
     document.querySelectorAll('.nav-btn').forEach(b =>
@@ -1274,7 +1312,7 @@
     const chatView = document.getElementById('chatView');
     chatView.style.display = (view === 'chat') ? 'contents' : 'none';
 
-    for (const v of ['tickets', 'telegram', 'account']) {
+    for (const v of ['tickets', 'telegram', 'account', 'admin']) {
       const el = document.getElementById(v + 'View');
       if (el) el.classList.toggle('hidden', v !== view);
     }
@@ -1283,7 +1321,83 @@
     if (view === 'tickets') loadTickets();
     if (view === 'telegram') renderTelegramInitial();
     if (view === 'account') renderAccountView();
+    if (view === 'admin') loadAdminPanel();
     if (window.innerWidth <= 720) toggleSidebar(false);
+  }
+
+  // =========================================================
+  // Admin panel
+  // =========================================================
+  async function loadAdminPanel() {
+    adminReloadCache();
+    adminReloadKb();
+    adminReloadTickets();
+  }
+
+  async function adminReloadCache() {
+    const el = document.getElementById('adminCacheStats');
+    try {
+      const res = await apiFetch('/admin/cache');
+      if (!res.ok) throw new Error('fail');
+      const d = await res.json();
+      el.textContent = `Status: ${d.enabled ? 'habilitado' : 'desabilitado'} · Entradas: ${d.size} · TTL: ${d.ttl_seconds}s`;
+    } catch (e) { el.textContent = 'Falha ao carregar estatísticas.'; }
+  }
+
+  async function adminClearCache() {
+    const status = document.getElementById('adminCacheStatus');
+    status.textContent = 'Limpando…';
+    try {
+      const res = await apiFetch('/admin/cache/clear', { method: 'POST' });
+      if (!res.ok) throw new Error('fail');
+      status.textContent = 'Cache limpo.';
+      adminReloadCache();
+    } catch (e) { status.textContent = 'Falha ao limpar.'; }
+  }
+
+  async function adminReloadKb() {
+    const el = document.getElementById('adminKbStats');
+    try {
+      const res = await apiFetch('/admin/health');
+      if (!res.ok) throw new Error('fail');
+      const d = await res.json();
+      el.textContent = `Status: ${d.status} · Documentos indexados: ${d.documents_indexed}`;
+    } catch (e) { el.textContent = 'Falha ao carregar KB.'; }
+  }
+
+  async function adminRebuildKb() {
+    if (!confirm('Rebuild full RAG index? Pode demorar ~1 minuto e re-baixa embeddings.')) return;
+    const status = document.getElementById('adminKbStatus');
+    status.textContent = 'Agendando…';
+    try {
+      const res = await apiFetch('/admin/kb/rebuild', { method: 'POST' });
+      if (!res.ok) throw new Error('fail');
+      status.textContent = 'Rebuild iniciado — verifique novamente em ~1 minuto.';
+    } catch (e) { status.textContent = 'Falha ao agendar rebuild.'; }
+  }
+
+  async function adminReloadTickets() {
+    const el = document.getElementById('adminTicketsList');
+    try {
+      const res = await apiFetch('/admin/tickets?limit=25');
+      if (!res.ok) throw new Error('fail');
+      const d = await res.json();
+      if (!d.tickets.length) { el.innerHTML = 'Nenhum ticket registrado.'; return; }
+      el.innerHTML = d.tickets.map(t => `
+        <div class="ticket-item">
+          <div class="ticket-head">
+            <span class="ticket-id">${escapeHtml(t.ticket_id)}</span>
+            <span class="ticket-priority priority-${escapeHtml(t.priority)}">${escapeHtml((t.priority || 'medium').toUpperCase())}</span>
+          </div>
+          <div class="ticket-body">${escapeHtml(t.issue)}</div>
+          <div class="ticket-foot">
+            <span>👤 ${escapeHtml(t.user_email)}</span>
+            <span>📅 ${t.created_at ? new Date(t.created_at).toLocaleString('pt-BR') : '—'}</span>
+            <span>📌 ${escapeHtml(t.status || '—')}</span>
+          </div>
+        </div>
+      `).join('');
+    } catch (e) { el.textContent = 'Falha ao carregar tickets.'; }
   }
 
   function toggleSidebar(force) {
