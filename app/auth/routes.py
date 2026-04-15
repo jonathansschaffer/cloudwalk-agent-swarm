@@ -112,7 +112,11 @@ class TokenOut(BaseModel):
 
 class UserOut(BaseModel):
     id: int
-    email: EmailStr
+    # Plain str (not EmailStr): pydantic's email-validator rejects IANA
+    # special-use TLDs like `.test`, which seeded demo users use. Login
+    # would succeed, then /auth/me 500'd on response serialization and
+    # the frontend silently looped back to the login screen.
+    email: str
     name: str
     plan: str
     account_status: str
