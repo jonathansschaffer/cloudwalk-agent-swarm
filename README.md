@@ -661,7 +661,7 @@ Tracked against the 9 findings in `security-assessment-report.md`. Split into tw
 - [x] Fix account enumeration on `POST /auth/register` — HIGH-03 (shipped in **Commit C** alongside email verification; `/auth/register` now always returns 202 + generic ack regardless of whether the email exists)
 
 **Commit C — P2 medium-term (done):**
-- [x] Email verification flow (`email_tokens` table w/ `verify_email` purpose + pluggable provider; log-only adapter for demo, Resend/Postmark/SES drop-in via `EMAIL_PROVIDER` env) — MEDIUM-08
+- [x] Email verification flow (`email_tokens` table w/ `verify_email` purpose + pluggable provider; log-only adapter for demo, Resend/Postmark/SES drop-in via `EMAIL_PROVIDER` env) — MEDIUM-08. **Disabled by default for the challenge demo** (`REQUIRE_EMAIL_VERIFICATION=false`): without a verified sender domain the Resend/Postmark sandbox only delivers to the account owner, which would brick signup for evaluators. Flip the flag to `true` + point `EMAIL_PROVIDER` at a real provider once a domain is wired up — no other code change needed.
 - [x] HIGH-03 enumeration fix: `/auth/register` always returns 202 + generic ack regardless of email existence
 - [x] Slim public `/health` → `{"status":"ok","show_agent_badge":bool}`; details at authenticated `/admin/health` (requires `user.is_admin`) — MEDIUM-09
 - [x] CAPTCHA (Cloudflare Turnstile) after `CAPTCHA_AFTER_FAILED_LOGINS` (default 3) — flag-gated via `TURNSTILE_SECRET_KEY`; `/auth/captcha-config` exposes the site key to the frontend
@@ -711,6 +711,10 @@ Ideas worth considering once Phases 1–4 are stable. Curated — we only keep i
 - **Incremental RAG ingestion.** Already in Phase 4, but worth reiterating — full rebuilds block the KB for minutes once the corpus grows past ~100 pages.
 - **Per-user vector recall over `chat_messages`.** The 3-turn context window is a cheap trade-off today. A proper follow-up is embedding each user's own conversation history into a second Chroma collection so multi-session memory works at constant cost. Displaces the "larger-window" workaround entirely.
 - **Larger-window conversation context (stopgap).** Shipped at **3 turns × 500 chars/side**. Each extra turn ≈ +150 input tokens (≈+30% on the current bill per turn added), and the support agent's tool-loop multiplies that. Evolution path before reaching for vector recall: (i) adaptive window (extend only on pronoun/short-message follow-ups), (ii) rolling 1-sentence session summary cached on `chat_messages`.
+
+**Auth & anti-abuse**
+
+- **Turn email verification back on in production.** The full flow (token table, `/auth/verify`, lockout-style unlock, pluggable provider) is built and tested — `REQUIRE_EMAIL_VERIFICATION=false` only to keep the demo frictionless for evaluators. Activation is three env vars (`REQUIRE_EMAIL_VERIFICATION=true`, `EMAIL_PROVIDER=resend`, `EMAIL_API_KEY=…`) plus DNS records for a verified sender domain on Resend/Postmark/SES. Without this, any future real-user deployment has zero protection against signup with throwaway/nonexistent emails.
 
 **Observability & compliance**
 

@@ -8,6 +8,7 @@
 
   <!-- Marked.js for Markdown rendering -->
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 
   <style>
     /* ========================================================= */
@@ -756,6 +757,7 @@
         <label for="loginPassword">Senha</label>
         <input class="form-input" type="password" id="loginPassword" required autocomplete="current-password" />
       </div>
+      <div id="loginCaptcha" class="form-group hidden"></div>
       <button class="btn-primary" type="submit" id="loginBtn">Entrar</button>
     </form>
     <div class="auth-switch">
@@ -801,6 +803,7 @@
           a exclusão completa da minha conta a qualquer momento.
         </label>
       </div>
+      <div id="registerCaptcha" class="form-group hidden"></div>
       <button class="btn-primary" type="submit" id="registerBtn">Criar conta</button>
     </form>
     <div class="auth-switch">
@@ -971,6 +974,9 @@
     for (const s of ['loginScreen', 'registerScreen', 'mainScreen']) {
       document.getElementById(s).classList.toggle('hidden', s !== id);
     }
+    // Register: anti-bot, so the challenge is always visible.
+    // Login: only rendered after captcha_required (first 3 attempts stay friction-free).
+    if (id === 'registerScreen') renderCaptcha('registerCaptcha');
   }
 
   function showError(targetId, message) {
@@ -983,6 +989,53 @@
     const el = document.getElementById(targetId);
     el.classList.remove('visible');
     el.textContent = '';
+  }
+
+  // =========================================================
+  // Cloudflare Turnstile — fetched once, rendered on demand.
+  // =========================================================
+  let _captchaConfig = null;           // { enabled, site_key }
+  const _captchaWidgets = {};          // containerId -> widgetId
+
+  async function getCaptchaConfig() {
+    if (_captchaConfig) return _captchaConfig;
+    try {
+      const res = await fetch(`${API_BASE}/auth/captcha-config`);
+      _captchaConfig = await res.json();
+    } catch {
+      _captchaConfig = { enabled: false, site_key: '' };
+    }
+    return _captchaConfig;
+  }
+
+  async function renderCaptcha(containerId) {
+    const cfg = await getCaptchaConfig();
+    if (!cfg.enabled || !cfg.site_key) return false;
+    const el = document.getElementById(containerId);
+    if (!el) return false;
+    el.classList.remove('hidden');
+    // Wait for the Turnstile script to finish loading (async defer).
+    let tries = 0;
+    while (typeof window.turnstile === 'undefined' && tries < 40) {
+      await new Promise(r => setTimeout(r, 100));
+      tries++;
+    }
+    if (typeof window.turnstile === 'undefined') return false;
+    if (_captchaWidgets[containerId] !== undefined) {
+      window.turnstile.reset(_captchaWidgets[containerId]);
+      return true;
+    }
+    _captchaWidgets[containerId] = window.turnstile.render('#' + containerId, {
+      sitekey: cfg.site_key,
+      theme: 'dark',
+    });
+    return true;
+  }
+
+  function getCaptchaToken(containerId) {
+    const widgetId = _captchaWidgets[containerId];
+    if (widgetId === undefined || typeof window.turnstile === 'undefined') return '';
+    return window.turnstile.getResponse(widgetId) || '';
   }
 
   // =========================================================
@@ -1001,6 +1054,7 @@
         body: JSON.stringify({
           email: document.getElementById('loginEmail').value,
           password: document.getElementById('loginPassword').value,
+          captcha_token: getCaptchaToken('loginCaptcha') || undefined,
         }),
       });
       const data = await res.json();
@@ -1008,8 +1062,10 @@
         let detail = data.detail;
         // Turnstile challenge (403): backend returns {error:'captcha_required', message:'...'}
         if (detail && typeof detail === 'object' && detail.error === 'captcha_required') {
-          showError('loginError', (detail.message || 'Verificação adicional necessária.') +
-            ' Recarregue a página e tente novamente.');
+          const rendered = await renderCaptcha('loginCaptcha');
+          showError('loginError', rendered
+            ? (detail.message || 'Complete a verificação abaixo e tente novamente.')
+            : 'Verificação indisponível no momento. Tente novamente em instantes.');
           return;
         }
         if (detail && typeof detail === 'object' && detail.error === 'email_not_verified') {
@@ -1017,7 +1073,17 @@
           return;
         }
         if (Array.isArray(detail)) detail = detail.map(d => d.msg).join(' ');
-        showError('loginError', (typeof detail === 'string' ? detail : null) || 'Falha ao entrar.');
+        // Translate common backend messages to Portuguese + add status-code fallbacks
+        // so the user sees something actionable instead of a generic "Falha ao entrar".
+        let msg = typeof detail === 'string' ? detail : null;
+        if (msg === 'Invalid email or password.') msg = 'E-mail ou senha inválidos.';
+        if (!msg) {
+          if (res.status === 401) msg = 'E-mail ou senha inválidos.';
+          else if (res.status === 429) msg = 'Muitas tentativas. Aguarde um minuto e tente novamente.';
+          else if (res.status >= 500) msg = 'Erro no servidor. Tente novamente em instantes.';
+          else msg = 'Falha ao entrar.';
+        }
+        showError('loginError', msg);
         return;
       }
       setToken(data.access_token);
@@ -1050,13 +1116,27 @@
           email: document.getElementById('regEmail').value,
           password: document.getElementById('regPassword').value,
           lgpd_consent: true,
+          captcha_token: getCaptchaToken('registerCaptcha') || undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok && res.status !== 202) {
         let detail = data.detail;
+        if (detail && typeof detail === 'object' && detail.error === 'captcha_required') {
+          const rendered = await renderCaptcha('registerCaptcha');
+          showError('registerError', rendered
+            ? (detail.message || 'Complete a verificação abaixo e tente novamente.')
+            : 'Verificação indisponível no momento. Tente novamente em instantes.');
+          return;
+        }
         if (Array.isArray(detail)) detail = detail.map(d => d.msg).join(' ');
-        showError('registerError', detail || 'Falha ao criar conta.');
+        let msg = typeof detail === 'string' ? detail : null;
+        if (!msg) {
+          if (res.status === 429) msg = 'Muitas tentativas. Aguarde um minuto e tente novamente.';
+          else if (res.status >= 500) msg = 'Erro no servidor. Tente novamente em instantes.';
+          else msg = 'Falha ao criar conta.';
+        }
+        showError('registerError', msg);
         return;
       }
       // HIGH-03: /auth/register is enumeration-safe and always returns 202 with

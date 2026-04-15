@@ -34,6 +34,7 @@ from app.config import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     CAPTCHA_AFTER_FAILED_LOGINS,
     LOGIN_LOCKOUT_THRESHOLD,
+    REQUIRE_EMAIL_VERIFICATION,
     TURNSTILE_SITE_KEY,
     WEB_APP_URL,
 )
@@ -79,6 +80,14 @@ class RegisterIn(BaseModel):
     lgpd_consent: bool = Field(
         ...,
         description="Must be true — explicit LGPD consent is required to register.",
+    )
+
+    captcha_token: str | None = Field(
+        default=None,
+        description=(
+            "Cloudflare Turnstile token. Required when Turnstile is enabled "
+            "via TURNSTILE_SECRET_KEY. Blocks automated bot signups."
+        ),
     )
 
     @field_validator("name")
@@ -207,6 +216,20 @@ def register(request: Request, body: RegisterIn, db: Session = Depends(get_db)) 
     now = datetime.now(timezone.utc)
     ip = _client_ip(request)
 
+    # Anti-bot gate. When Turnstile is enabled we require a valid token on
+    # every registration — the cost of a legit user solving a quick challenge
+    # is trivial vs. allowing automated account creation.
+    if captcha.is_enabled():
+        if not captcha.verify(body.captcha_token or "", remote_ip=ip):
+            audit.emit("auth.register.captcha_failed", ip=ip, email=body.email.lower())
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "captcha_required",
+                    "message": "Complete a verificação antes de criar a conta.",
+                },
+            )
+
     existing = db.query(User).filter(User.email == body.email.lower()).one_or_none()
     if existing is not None:
         audit.emit(
@@ -229,7 +252,7 @@ def register(request: Request, body: RegisterIn, db: Session = Depends(get_db)) 
         transfer_limit_daily=1000.00,
         transfer_limit_remaining=1000.00,
         failed_login_attempts=0,
-        email_verified=False,
+        email_verified=not REQUIRE_EMAIL_VERIFICATION,
     )
     db.add(user)
     try:
@@ -241,12 +264,15 @@ def register(request: Request, body: RegisterIn, db: Session = Depends(get_db)) 
         return RegisterAck()
 
     db.refresh(user)
-    token = _issue_email_token(db, user.id, "verify_email", ttl_minutes=60)
-    db.commit()
-    _send_verification_email(user.email, user.name, token)
+    if REQUIRE_EMAIL_VERIFICATION:
+        token = _issue_email_token(db, user.id, "verify_email", ttl_minutes=60)
+        db.commit()
+        _send_verification_email(user.email, user.name, token)
+        logger.info("New user registered | id=%d (verification email queued)", user.id)
+    else:
+        logger.info("New user registered | id=%d (email verification skipped by flag)", user.id)
 
     audit.emit("auth.register.success", actor_user_id=user.id, ip=ip)
-    logger.info("New user registered | id=%d (verification email queued)", user.id)
     return RegisterAck()
 
 
@@ -328,7 +354,7 @@ def login(request: Request, body: LoginIn, db: Session = Depends(get_db)) -> Tok
                 status_code=403,
                 detail={
                     "error": "captcha_required",
-                    "message": "Please complete the verification challenge.",
+                    "message": "Complete a verificação para continuar.",
                 },
             )
 
@@ -352,7 +378,7 @@ def login(request: Request, body: LoginIn, db: Session = Depends(get_db)) -> Tok
             audit.emit("auth.login.failure", ip=ip, email=body.email.lower())
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
-    if not user.email_verified:
+    if REQUIRE_EMAIL_VERIFICATION and not user.email_verified:
         audit.emit("auth.login.email_unverified", actor_user_id=user.id, ip=ip)
         raise HTTPException(
             status_code=403,

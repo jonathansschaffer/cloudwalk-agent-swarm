@@ -137,6 +137,16 @@ CAPTCHA_AFTER_FAILED_LOGINS: int = int(os.getenv("CAPTCHA_AFTER_FAILED_LOGINS", 
 TURNSTILE_SITE_KEY: str = os.getenv("TURNSTILE_SITE_KEY", "")
 TURNSTILE_SECRET_KEY: str = os.getenv("TURNSTILE_SECRET_KEY", "")
 
+# Email verification gate. When true, /auth/register creates users with
+# email_verified=False and /auth/login returns 403 until the user clicks
+# the confirmation link. When false (default for the demo), new users are
+# activated immediately — the full token/provider pipeline still runs in
+# log-only mode, so flipping the flag back on is a one-line change once a
+# real email provider + verified sender domain are wired up.
+REQUIRE_EMAIL_VERIFICATION: bool = os.getenv(
+    "REQUIRE_EMAIL_VERIFICATION", "false"
+).lower() in {"1", "true", "yes"}
+
 # When true, chat responses include the agent+language badge in both web and
 # Telegram UIs. Default off in production — it leaks routing internals and is
 # noise for end users. Dev/debug: set SHOW_AGENT_BADGE=true.
